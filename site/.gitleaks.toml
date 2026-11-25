@@ -1,0 +1,18 @@
+title = "Mercury FM secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public templates, certificates, and audit artifacts only"
+paths = [
+  '''\.env\.example$''',
+  '''certs/prod-ca-2021\.crt$''',
+  '''docs/.*''',
+  '''supabase/\.temp/.*''',
+  '''\.audit-reports/.*''',
+  '''\.audit-tools/.*''',
+  '''node_modules/.*''',
+  '''dist/.*''',
+  '''package-lock\.json$''',
+]

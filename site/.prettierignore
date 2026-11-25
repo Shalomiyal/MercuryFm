@@ -1,0 +1,12 @@
+dist
+node_modules
+coverage
+playwright-report
+test-results
+.vercel
+package-lock.json
+certs
+*.png
+*.pdf
+*.pptx
+supabase/migrations

@@ -1,0 +1,9 @@
+-- This file is deprecated.
+--
+-- service_role is no longer granted access inside tenant schemas. Room reads
+-- and writes now go through public security-definer RPCs, and organization
+-- user details live in org_<slug>.members.
+--
+-- Run this instead:
+--   supabase/tenant-users-migration.sql   (one-time upgrade for existing projects)
+--   supabase/updated-provision-organization.sql (once, after the migration)

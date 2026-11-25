@@ -1,0 +1,21 @@
+# Dependencies & Builds
+node_modules/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Audit Tools & Reports
+.audit-tools/
+.audit-reports/
+semgrep-report.json
+semgrep.json
+*.json
+*.sql
+*.zip
+
+# Agent & CLI Skills
+.agents/
+.claude/
+agent/

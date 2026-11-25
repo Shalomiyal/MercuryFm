@@ -1,0 +1,55 @@
+{
+  "name": "mercury-room-status",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5173",
+    "dev:vercel": "vercel dev --listen 5173",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check:supabase": "node scripts/check-supabase.mjs",
+    "audit:prod": "npm audit --omit=dev --audit-level=high",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{js,jsx,json,md,html,css}\"",
+    "format:check": "prettier --check \"**/*.{js,jsx,json,md,html,css}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@supabase/server": "^1.9.2",
+    "@supabase/supabase-js": "^2.57.4",
+    "busboy": "^1.6.0",
+    "exceljs": "^4.4.0",
+    "motion": "^12.0.0",
+    "nodemailer": "^10.6.1",
+    "pg": "^8.23.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-router-dom": "^7.8.2"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@tailwindcss/vite": "^4.1.13",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
+    "@vitejs/plugin-react": "^5.0.2",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react": "^7.37.5",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^15.15.0",
+    "jsdom": "^26.1.0",
+    "prettier": "^3.10.1",
+    "tailwindcss": "^4.1.13",
+    "vercel": "^66.6.0",
+    "vite": "^7.1.5",
+    "vitest": "^3.2.7"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "^11.1.1"
+    }
+  }
+}

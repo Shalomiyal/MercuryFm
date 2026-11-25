@@ -1,0 +1,181 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Inspect project documents",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"-c",
+				"import zipfile,re,glob,os,sys\nfor ppt in glob.glob(r'E:\\KenWeb\\MercuryFm\\docs\\*.pptx'):\n z=zipfile.ZipFile(ppt)\n print('PPTX_SLIDES')\n for n in sorted([n for n in z.namelist() if re.match(r'ppt/slides/slide\\d+\\.xml$',n)],key=lambda x:int(re.search(r'(\\d+)',x.split('/')[-1]).group(1))):\n  s=z.read(n).decode('utf-8','replace')\n  txt=[re.sub('<[^>]+>','',x) for x in re.findall(r'<a:t[^>]*>(.*?)</a:t>',s,re.S)]\n  print(n+': '+' | '.join(txt))\nprint('PDF_PAGE_MARKERS')\npdf=r'E:\\KenWeb\\MercuryFm\\docs\\Estimate.pdf'\ndata=open(pdf,'rb').read()\nprint('bytes='+str(len(data))+' pdf_pages='+str(data.count(b'/Type /Page'))\n"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Inspect project documents v2",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"inspect_docs.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Install PDF inspector",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"-m",
+				"pip",
+				"install",
+				"pypdf",
+				"--quiet"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Inspect PDF estimate",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"inspect_docs.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Inspect PDF estimate v2",
+			"type": "shell",
+			"command": "python",
+			"args": [
+				"inspect_docs.py"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Install and build Phase 1",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"install",
+				";",
+				"npm",
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Preview Phase 1",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"preview",
+				"--",
+				"--host",
+				"127.0.0.1"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Check Phase 1 preview",
+			"type": "shell",
+			"command": "curl.exe",
+			"args": [
+				"-I",
+				"http://127.0.0.1:4173/"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Check Phase 1 preview v2",
+			"type": "shell",
+			"command": "powershell.exe",
+			"args": [
+				"-NoProfile",
+				"-Command",
+				"(Invoke-WebRequest -Uri 'http://127.0.0.1:4173/' -UseBasicParsing).StatusCode"
+			],
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Build Phase 2",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build Phase 3",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Install and build Phase 4",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"install",
+				";",
+				"npm",
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		},
+		{
+			"label": "Build final Phase 5",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": [
+				"$tsc"
+			],
+			"group": "build"
+		}
+	]
+}

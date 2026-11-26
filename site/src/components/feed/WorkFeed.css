@@ -34,8 +34,8 @@
 
 /* Full-height WhatsApp-style standalone page layout */
 .work-feed-page {
-  padding: 16px 24px;
-  max-width: 1440px;
+  padding: 0;
+  max-width: none;
   height: calc(100vh - 64px);
   height: calc(100dvh - 64px);
   display: flex;
@@ -47,6 +47,9 @@
   margin-top: 0;
   flex: 1;
   min-height: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .work-feed--full .feed-body {
@@ -56,9 +59,15 @@
   overflow-y: auto;
 }
 
+.feed-meta-line {
+  font-size: 11.5px;
+  color: var(--color-text-secondary);
+  margin: 1px 0 6px;
+}
+
 @media (max-width: 768px) {
   .work-feed-page {
-    padding: 10px 12px;
+    padding: 0;
     height: calc(100vh - 60px - 72px);
     height: calc(100dvh - 60px - 72px);
   }
@@ -1025,6 +1034,11 @@
 [data-theme="dark"] .feed-skeleton-avatar {
   background: linear-gradient(90deg, #2a2f3b 25%, #373d4c 50%, #2a2f3b 75%);
   background-size: 200% 100%;
+}
+
+[data-theme="dark"] .shimmer {
+  background: linear-gradient(90deg, #1e2430 25%, #2a3140 50%, #1e2430 75%) !important;
+  background-size: 200% 100% !important;
 }
 
 [data-theme="dark"] .feed-media-kind,

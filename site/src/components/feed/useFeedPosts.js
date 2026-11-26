@@ -306,13 +306,15 @@ export function useFeedPosts({ workDate, allDates = false, schemaName, revision 
           .lte('status_time', `${workDate}T23:59:59.999`)
       }
 
-      const [{ data: histData }, { data: memberRows }] = await Promise.all([
+      const [{ data: histData }, { data: memberRows }, { data: profileRows }] = await Promise.all([
         histQuery,
         orgDb.from('members').select('id, full_name'),
+        supabase.from('profiles').select('id, full_name'),
       ])
-      const memberById = Object.fromEntries(
-        (memberRows || []).map((m) => [m.id, m.full_name]),
-      )
+      const memberById = Object.fromEntries([
+        ...(profileRows || []).map((p) => [p.id, p.full_name]),
+        ...(memberRows || []).map((m) => [m.id, m.full_name]),
+      ])
       systemRows = (histData || []).map((h) => ({
         itemType: 'system',
         post_id: `sys-${h.id}`,

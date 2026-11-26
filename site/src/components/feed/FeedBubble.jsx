@@ -80,20 +80,17 @@ function FeedBubble({ post, posts: groupedPosts, isUnread = false, onMarkRead })
         <div className="feed-bubble-body">
           <span className="feed-sender" style={{ color }}>{lead.cleaner_name}</span>
 
-          <div className="feed-tags">
-            {lead.branch_id && (
-              <span className="feed-tag branch" title="Branch">{lead.branch_id}</span>
-            )}
-            {lead.room_id && (
-              <span className="feed-tag room" title="Room">Room {lead.room_id}</span>
-            )}
-            {lead.task_name && (
-              <span className="feed-tag task" title="Task">{lead.task_name}</span>
-            )}
-            <span className={`feed-tag type ${lead.kind}`}>
-              {lead.stage === 'start' || lead.kind === 'photo' ? '📷 Start photo' : '🎬 Finish video'}
-            </span>
-          </div>
+          {(lead.room_id || lead.task_name || lead.branch_id) && (
+            <div className="feed-meta-line">
+              {[
+                lead.room_id ? `Room ${lead.room_id}` : '',
+                lead.task_name || '',
+                lead.branch_id || '',
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </div>
+          )}
 
           <MediaGrid posts={mediaPosts} onOpen={openLightbox} />
 

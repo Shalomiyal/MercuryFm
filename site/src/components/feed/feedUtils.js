@@ -12,7 +12,7 @@ const TIME_FMT = new Intl.DateTimeFormat('en-US', {
   hour12: true,
 })
 
-const STATUS_LABELS = {
+export const STATUS_LABELS = {
   check_in: 'Checked in',
   check_out: 'Checked out',
   clean_start: 'Clean started',

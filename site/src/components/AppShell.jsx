@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import DataRefreshBar from './ui/DataRefreshBar'
@@ -124,6 +124,9 @@ export default function AppShell({ role }) {
   const { theme, setThemeMode } = useTheme()
   const navigate = useNavigate()
   const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const isFeedPage = location.pathname === '/admin/feed'
+  const feedSearch = searchParams.get('q') || ''
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === '1'
@@ -330,31 +333,50 @@ export default function AppShell({ role }) {
               </svg>
             </button>
             <div className="wt-topbar-title-group">
-              <Breadcrumbs items={breadcrumbs} />
-              <h1 className="wt-topbar-title">{currentLabel}</h1>
+              {!isFeedPage ? <Breadcrumbs items={breadcrumbs} /> : null}
+              <h1 className="wt-topbar-title">{isFeedPage ? 'Work feed' : currentLabel}</h1>
             </div>
           </div>
 
           <div className="wt-topbar-right">
-            <form className="wt-global-search" onSubmit={handleQuickJump} role="search">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <circle cx="11" cy="11" r="8" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-              <input
-                type="search"
-                value={quickQuery}
-                onChange={(e) => setQuickQuery(e.target.value)}
-                placeholder="Jump to page..."
-                aria-label="Jump to page"
-                list="wt-nav-jump-list"
-              />
-              <datalist id="wt-nav-jump-list">
-                {flatItems.map((item) => (
-                  <option key={item.path} value={item.label} />
-                ))}
-              </datalist>
-            </form>
+            {isFeedPage ? (
+              <div className="wt-global-search" role="search">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <input
+                  type="search"
+                  value={feedSearch}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    setSearchParams(val ? { q: val } : {}, { replace: true })
+                  }}
+                  placeholder="Search name..."
+                  aria-label="Search chat by name"
+                />
+              </div>
+            ) : (
+              <form className="wt-global-search" onSubmit={handleQuickJump} role="search">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+                <input
+                  type="search"
+                  value={quickQuery}
+                  onChange={(e) => setQuickQuery(e.target.value)}
+                  placeholder="Jump to page..."
+                  aria-label="Jump to page"
+                  list="wt-nav-jump-list"
+                />
+                <datalist id="wt-nav-jump-list">
+                  {flatItems.map((item) => (
+                    <option key={item.path} value={item.label} />
+                  ))}
+                </datalist>
+              </form>
+            )}
 
             <DataRefreshBar />
 

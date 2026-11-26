@@ -2,91 +2,58 @@
 // Placed below the assignment section in DailyTasksPage.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 import { useDataRefresh } from '../../contexts/DataRefreshContext'
 import { useFeedPosts } from './useFeedPosts'
-import { buildFeedTimeline, formatDividerLabel, formatSystemMessage } from './feedUtils'
+import { buildFeedTimeline, STATUS_LABELS } from './feedUtils'
 import DateDivider from './DateDivider'
 import FeedBubble from './FeedBubble'
-import FeedFilters from './FeedFilters'
 import FeedSkeleton from './FeedSkeleton'
 import './WorkFeed.css'
 
 const TIME_FMT = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
 
-function formatLastUpdated(ts) {
-  if (!ts) return 'Never'
-  const diff = Date.now() - ts
-  if (diff < 10_000) return 'just now'
-  if (diff < 60_000) return `${Math.round(diff / 1000)}s ago`
-  if (diff < 3600_000) return `${Math.round(diff / 60_000)}m ago`
-  return TIME_FMT.format(new Date(ts))
+function initials(name = '') {
+  return name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || 'FD'
 }
 
-export default function WorkFeed({ workDate, cleaners = [], branches = [], fullHeight = false }) {
+export default function WorkFeed({ workDate, fullHeight = false }) {
   const { schemaName } = useAuth()
   const { revision } = useDataRefresh()
-  const [isMobile, setIsMobile] = useState(false)
-  const [lastUpdated, setLastUpdated] = useState(Date.now())
+  const [searchParams] = useSearchParams()
   const [showJumpLatest, setShowJumpLatest] = useState(false)
 
-  const [filters, setFilters] = useState({
-    date: workDate,
-    allDates: false,
-    cleaner: '',
-    branch: '',
-    type: '',
-    search: '',
-  })
+  const search = (searchParams.get('q') || '').trim()
 
-  useEffect(() => {
-    setFilters((f) => ({ ...f, date: workDate }))
-  }, [workDate])
-
-  const { posts, loading, error, hasMore, loadingMore, reload, loadMore, isMock } = useFeedPosts({
-    workDate: filters.date,
-    allDates: filters.allDates,
+  const { posts, loading, error, hasMore, loadingMore, reload, loadMore } = useFeedPosts({
+    workDate,
+    allDates: true,
     schemaName,
     revision,
   })
 
-  // Derive branch options from both prop and feed items
-  const branchOptions = useMemo(() => {
-    const set = new Set((branches || []).map((b) => b.branch_id).filter(Boolean))
-    for (const p of posts) {
-      if (p.branch_id) set.add(p.branch_id)
-    }
-    return [...set].sort().map((branch_id) => ({ branch_id }))
-  }, [branches, posts])
-
   // Filtered posts
   const filteredPosts = useMemo(() => {
-    let result = posts
-    if (filters.cleaner) {
-      result = result.filter((p) => p.itemType === 'system' || p.cleaner_id === filters.cleaner)
-    }
-    if (filters.branch) {
-      result = result.filter((p) => p.itemType === 'system' || p.branch_id === filters.branch)
-    }
-    if (filters.type) {
-      result = result.filter((p) => p.itemType === 'media' && p.kind === filters.type)
-    }
-    if (filters.search) {
-      const term = filters.search.toLowerCase()
-      result = result.filter((p) => {
-        if (p.itemType === 'system') {
-          return String(p.room_id || '').toLowerCase().includes(term)
-        }
+    if (!search) return posts
+    const term = search.toLowerCase()
+    return posts.filter((p) => {
+      if (p.itemType === 'system') {
+        const statusText = (STATUS_LABELS[p.status] || p.status || '').toLowerCase()
         return (
+          String(p.updated_by_name || 'Admin').toLowerCase().includes(term) ||
           String(p.room_id || '').toLowerCase().includes(term) ||
-          String(p.task_name || '').toLowerCase().includes(term) ||
-          String(p.cleaner_name || '').toLowerCase().includes(term) ||
-          String(p.branch_id || '').toLowerCase().includes(term)
+          statusText.includes(term)
         )
-      })
-    }
-    return result
-  }, [posts, filters])
+      }
+      return (
+        String(p.cleaner_name || '').toLowerCase().includes(term) ||
+        String(p.room_id || '').toLowerCase().includes(term) ||
+        String(p.task_name || '').toLowerCase().includes(term) ||
+        String(p.branch_id || '').toLowerCase().includes(term)
+      )
+    })
+  }, [posts, search])
 
   const readStorageKey = `worktrack:feed-read:${schemaName || 'default'}`
   const [readIds, setReadIds] = useState(() => {
@@ -188,80 +155,11 @@ export default function WorkFeed({ workDate, cleaners = [], branches = [], fullH
     }
   }
 
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 640px)')
-    setIsMobile(mq.matches)
-    const handler = (e) => setIsMobile(e.matches)
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
-  }, [])
-
-  useEffect(() => {
-    setLastUpdated(Date.now())
-  }, [posts])
-
-  useEffect(() => {
-    const timer = setInterval(() => setLastUpdated((t) => t), 20_000)
-    return () => clearInterval(timer)
-  }, [])
-
   return (
     <section
       className={`work-feed ${fullHeight ? 'work-feed--full' : ''}`}
-      aria-labelledby="work-feed-title"
+      aria-label="Work feed"
     >
-      {/* Chat header */}
-      <div className="feed-header">
-        <div className="feed-header-left">
-          <div className="feed-header-icon" aria-hidden="true">💬</div>
-          <div>
-            <div className="feed-title-row">
-              <h3 id="work-feed-title" className="feed-title">Work feed</h3>
-              <span className="feed-count-pill">{mediaCount}</span>
-              {unreadPostIds.length > 0 && (
-                <>
-                  <span className="feed-unread-pill">{unreadPostIds.length} unread</span>
-                  <button
-                    type="button"
-                    className="feed-mark-read-btn"
-                    onClick={() => markRead(unreadPostIds)}
-                  >
-                    Mark all read
-                  </button>
-                </>
-              )}
-            </div>
-            <p className="feed-subtitle">
-              {isMock
-                ? 'Sample data — upload real media to see live feed'
-                : `Updated ${formatLastUpdated(lastUpdated)}`}
-            </p>
-          </div>
-        </div>
-
-        <div className="feed-header-right">
-          <FeedFilters
-            filters={filters}
-            onChange={setFilters}
-            cleaners={cleaners}
-            branches={branchOptions}
-            isMobile={isMobile}
-          />
-          <button
-            type="button"
-            className="secondary-button refresh-button"
-            onClick={() => {
-              reload()
-              setLastUpdated(Date.now())
-            }}
-            aria-label="Refresh feed"
-            title="Refresh"
-          >
-            ↺
-          </button>
-        </div>
-      </div>
-
       {/* Scrolling feed body */}
       <div
         className="feed-body"
@@ -294,8 +192,7 @@ export default function WorkFeed({ workDate, cleaners = [], branches = [], fullH
           <div className="feed-empty-state">
             <span className="feed-empty-icon">📭</span>
             <p>
-              No work posted yet
-              {!filters.allDates && filters.date ? ` for ${formatDividerLabel(filters.date)}` : ''}.
+              {search ? `No messages matching "${search}".` : 'No work posted yet.'}
             </p>
           </div>
         ) : (
@@ -307,10 +204,31 @@ export default function WorkFeed({ workDate, cleaners = [], branches = [], fullH
                   return <DateDivider key={item.key} date={item.date} />
                 }
                 if (item.type === 'system') {
+                  const ev = item.event
+                  const sender = ev.updated_by_name || 'Admin'
+                  const statusLabel = STATUS_LABELS[ev.status] || ev.status || 'Updated'
+                  const roomLabel = ev.room_id ? `Room ${ev.room_id}` : 'Room'
+                  const timeLabel = ev.created_at ? TIME_FMT.format(new Date(ev.created_at)) : ''
                   return (
-                    <div key={item.key} className="feed-system-event" role="status">
-                      <span>{formatSystemMessage(item.event)}</span>
-                    </div>
+                    <article key={item.key} className="feed-bubble is-status-bubble">
+                      <div
+                        className="feed-avatar"
+                        style={{ background: '#0369a1' }}
+                        aria-hidden="true"
+                        title={sender}
+                      >
+                        {initials(sender)}
+                      </div>
+                      <div className="feed-bubble-body">
+                        <span className="feed-sender" style={{ color: '#0369a1' }}>{sender}</span>
+                        <p className="feed-caption">{roomLabel} · {statusLabel}</p>
+                        {timeLabel && (
+                          <time className="feed-timestamp" dateTime={ev.created_at}>
+                            {timeLabel}
+                          </time>
+                        )}
+                      </div>
+                    </article>
                   )
                 }
                 const bubbleIsUnread = item.posts.some((p) => unreadSet.has(p.post_id))

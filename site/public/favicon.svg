@@ -1,5 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#9f1239"/>
-  <path d="M18 46V18h28v28H18Z" fill="none" stroke="#fff" stroke-width="5" stroke-linejoin="round"/>
-  <path d="M25 27h14M25 35h14" stroke="#fff" stroke-width="5" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <mask id="wt-m-cut">
+      <rect width="64" height="64" fill="#fff"/>
+      <circle cx="56" cy="53" r="31" fill="#000"/>
+    </mask>
+  </defs>
+  <path
+    d="M8 53V11H21L32 26L43 11H56V53H43V28L32 42L21 28V53H8Z"
+    fill="#9B1B30"
+    mask="url(#wt-m-cut)"
+  />
+  <path d="M56 53H48.5A7.5 7.5 0 0 1 56 45.5V53Z" fill="#C59B4E"/>
+  <path d="M40.5 53A15.5 15.5 0 0 1 56 37.5" stroke="#C59B4E" stroke-width="5.2" stroke-linecap="butt"/>
+  <path d="M30.5 53A25.5 25.5 0 0 1 56 27.5" stroke="#C59B4E" stroke-width="5.2" stroke-linecap="butt"/>
 </svg>

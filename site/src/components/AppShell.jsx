@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { AnimatePresence } from 'motion/react'
 import { useAuth } from '../contexts/AuthContext'
 import { useTheme } from '../contexts/ThemeContext'
 import DataRefreshBar from './ui/DataRefreshBar'
@@ -8,6 +7,7 @@ import PageTransition from './PageTransition'
 import BrandLogo from './ui/BrandLogo'
 import Breadcrumbs from './ui/Breadcrumbs'
 import Avatar from './ui/Avatar'
+import RouteFallback from './ui/RouteFallback'
 
 function IconDashboard() {
   return (
@@ -415,11 +415,11 @@ export default function AppShell({ role }) {
         </header>
 
         <main className="wt-main-content">
-          <AnimatePresence mode="wait">
+          <Suspense fallback={<RouteFallback />}>
             <PageTransition key={location.pathname}>
               <Outlet />
             </PageTransition>
-          </AnimatePresence>
+          </Suspense>
         </main>
       </div>
 

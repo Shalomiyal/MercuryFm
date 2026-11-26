@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
 import WorkFeed from '../components/feed/WorkFeed'
-import PageTransition from '../components/PageTransition'
 import { useDataRefresh } from '../contexts/DataRefreshContext'
 import { db } from '../lib/db'
 
@@ -32,10 +31,8 @@ export default function WorkFeedPage() {
   }, [loadLookups, revision])
 
   return (
-    <PageTransition>
-      <section className="content-page work-feed-page">
-        <WorkFeed workDate={today()} cleaners={cleaners} branches={branches} fullHeight />
-      </section>
-    </PageTransition>
+    <section className="content-page work-feed-page">
+      <WorkFeed workDate={today()} cleaners={cleaners} branches={branches} fullHeight />
+    </section>
   )
 }

@@ -1579,16 +1579,26 @@ dialog.dialog {
 [data-theme="dark"] input,
 [data-theme="dark"] select,
 [data-theme="dark"] textarea {
-  background: #1e293b;
+  background: #1e2535;
   color: var(--color-text-primary);
   border-color: var(--color-border);
+}
+[data-theme="dark"] input::placeholder,
+[data-theme="dark"] textarea::placeholder {
+  color: var(--color-text-muted);
 }
 
 [data-theme="dark"] .secondary-button,
 [data-theme="dark"] .icon-button {
-  background: #1e293b;
+  background: #1e2535;
   color: var(--color-text-primary);
   border-color: var(--color-border);
+}
+[data-theme="dark"] .secondary-button:hover:not(:disabled),
+[data-theme="dark"] .icon-button:hover {
+  border-color: var(--color-brand-secondary);
+  color: var(--color-brand-secondary);
+  background: rgba(155,28,46,0.15);
 }
 
 [data-theme="dark"] .topbar,

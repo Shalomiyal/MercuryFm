@@ -138,8 +138,9 @@ begin
         end if;
 
         insert into %1$I.daily_tasks
-          (assignment_id, task_name, start_by, finish_by, template_task_id)
-        select a.id, t.task_name, t.start_by, t.finish_by, t.id
+          (assignment_id, task_name, start_by, finish_by, template_task_id, branch_id, room_id)
+        select a.id, t.task_name, t.start_by, t.finish_by, t.id,
+               t.branch_id, t.room_id
           from %1$I.daily_assignments a
           join %1$I.template_tasks t on t.template_id = a.template_id
          where a.id = p_assignment

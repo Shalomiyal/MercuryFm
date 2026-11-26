@@ -20,6 +20,39 @@ export const STATUS_LABELS = {
   ready: 'Marked Ready',
 }
 
+export const STATUS_COLORS = {
+  ready: {
+    dot: '#16a34a',
+    bg: 'rgba(22, 163, 74, 0.14)',
+    text: '#15803d',
+    border: 'rgba(22, 163, 74, 0.35)',
+  },
+  check_in: {
+    dot: '#dc2626',
+    bg: 'rgba(220, 38, 38, 0.14)',
+    text: '#dc2626',
+    border: 'rgba(220, 38, 38, 0.35)',
+  },
+  check_out: {
+    dot: '#eab308',
+    bg: 'rgba(234, 179, 8, 0.18)',
+    text: '#a16207',
+    border: 'rgba(234, 179, 8, 0.45)',
+  },
+  clean_start: {
+    dot: '#2563eb',
+    bg: 'rgba(37, 99, 235, 0.14)',
+    text: '#2563eb',
+    border: 'rgba(37, 99, 235, 0.35)',
+  },
+  clean_finished: {
+    dot: '#ea580c',
+    bg: 'rgba(234, 88, 12, 0.14)',
+    text: '#ea580c',
+    border: 'rgba(234, 88, 12, 0.35)',
+  },
+}
+
 export function formatDividerLabel(isoDate, todayStr, yesterdayStr) {
   const today = todayStr || new Date().toISOString().slice(0, 10)
   const yesterday = yesterdayStr || new Date(Date.now() - 86400_000).toISOString().slice(0, 10)

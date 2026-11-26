@@ -6,7 +6,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useAuth } from '../../contexts/AuthContext'
 import { useDataRefresh } from '../../contexts/DataRefreshContext'
 import { useFeedPosts } from './useFeedPosts'
-import { buildFeedTimeline, STATUS_LABELS } from './feedUtils'
+import { buildFeedTimeline, STATUS_COLORS, STATUS_LABELS } from './feedUtils'
 import DateDivider from './DateDivider'
 import FeedBubble from './FeedBubble'
 import FeedSkeleton from './FeedSkeleton'
@@ -209,19 +209,52 @@ export default function WorkFeed({ workDate, fullHeight = false }) {
                   const statusLabel = STATUS_LABELS[ev.status] || ev.status || 'Updated'
                   const roomLabel = ev.room_id ? `Room ${ev.room_id}` : 'Room'
                   const timeLabel = ev.created_at ? TIME_FMT.format(new Date(ev.created_at)) : ''
+                  const sc = STATUS_COLORS[ev.status] || {
+                    dot: '#0369a1',
+                    bg: 'rgba(3, 105, 161, 0.12)',
+                    text: '#0369a1',
+                    border: 'rgba(3, 105, 161, 0.35)',
+                  }
                   return (
                     <article key={item.key} className="feed-bubble is-status-bubble">
                       <div
                         className="feed-avatar"
-                        style={{ background: '#0369a1' }}
+                        style={{ background: sc.dot }}
                         aria-hidden="true"
                         title={sender}
                       >
                         {initials(sender)}
                       </div>
-                      <div className="feed-bubble-body">
-                        <span className="feed-sender" style={{ color: '#0369a1' }}>{sender}</span>
-                        <p className="feed-caption">{roomLabel} · {statusLabel}</p>
+                      <div className="feed-bubble-body" style={{ borderLeft: `3px solid ${sc.dot}` }}>
+                        <span className="feed-sender" style={{ color: sc.dot }}>{sender}</span>
+                        <div className="feed-caption" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                          <span>{roomLabel} ·</span>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              padding: '2px 8px',
+                              borderRadius: 999,
+                              background: sc.bg,
+                              color: sc.text,
+                              border: `1px solid ${sc.border}`,
+                              fontWeight: 600,
+                              fontSize: '12px',
+                            }}
+                          >
+                            <span
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: '50%',
+                                background: sc.dot,
+                                display: 'inline-block',
+                              }}
+                            />
+                            {statusLabel}
+                          </span>
+                        </div>
                         {timeLabel && (
                           <time className="feed-timestamp" dateTime={ev.created_at}>
                             {timeLabel}

@@ -7,6 +7,11 @@ import {
   parseTaskWorkbook,
 } from '../../lib/excel'
 
+// Reserved field names used to store branch/room defaults inside task_fields.
+// They are stripped from the visible "custom fields" list in the UI.
+const FIELD_BRANCH = '__branch__'
+const FIELD_ROOM   = '__room__'
+
 const NEW_TASK_SELECT =
   'id, name, description, template_tasks(id, task_name, start_by, finish_by, sort_order, task_fields(id, field_name, default_value, sort_order))'
 const LEGACY_TASK_SELECT =
@@ -17,8 +22,20 @@ function isSchemaError(error) {
   return message.includes('start_by') || message.includes('task_fields')
 }
 
-function emptyTask(startBy = '', finishBy = '') {
-  return { task_name: '', start_by: startBy, finish_by: finishBy, fields: [] }
+// Pull the reserved branch/room values out of the task_fields array
+function extractBranchRoom(fields = []) {
+  const branch = fields.find((f) => f.field_name === FIELD_BRANCH)?.default_value || ''
+  const room   = fields.find((f) => f.field_name === FIELD_ROOM)?.default_value   || ''
+  return { branch, room }
+}
+
+// Visible custom fields — exclude the reserved ones
+function visibleFields(fields = []) {
+  return fields.filter((f) => f.field_name !== FIELD_BRANCH && f.field_name !== FIELD_ROOM)
+}
+
+function emptyTask() {
+  return { task_name: '', start_by: '', finish_by: '', branch: '', room: '', fields: [] }
 }
 
 function emptyDraft() {
@@ -27,24 +44,28 @@ function emptyDraft() {
 
 function sortedTasks(template) {
   return [...(template.template_tasks || [])].sort(
-    (left, right) => (left.sort_order || 0) - (right.sort_order || 0),
+    (a, b) => (a.sort_order || 0) - (b.sort_order || 0),
   )
 }
 
 export default function TemplatesManager({ embedded = false, onTemplatesChanged }) {
   const { revision } = useDataRefresh()
   const confirm = useConfirm()
-  const [templates, setTemplates] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [draft, setDraft] = useState(null)
-  const [saving, setSaving] = useState(false)
-  const [formError, setFormError] = useState('')
+  const [templates, setTemplates]   = useState([])
+  const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState('')
+  const [draft, setDraft]           = useState(null)
+  const [saving, setSaving]         = useState(false)
+  const [formError, setFormError]   = useState('')
   const [schemaReady, setSchemaReady] = useState(true)
-  const [search, setSearch] = useState('')
+  const [search, setSearch]         = useState('')
   const [importInfo, setImportInfo] = useState(null)
-  const [importing, setImporting] = useState(false)
+  const [importing, setImporting]   = useState(false)
   const fileRef = useRef(null)
+
+  // Branch / room lookup data for dropdowns (loaded from existing tables — no SQL needed)
+  const [branches, setBranches] = useState([])
+  const [rooms, setRooms]       = useState([])
 
   async function loadTemplates() {
     setLoading(true)
@@ -59,6 +80,14 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
       return
     }
 
+    // Load branches and rooms for dropdowns — non-fatal if tables don't exist yet
+    const [branchResult, roomResult] = await Promise.all([
+      orgDb.from('branches').select('branch_id').order('branch_id'),
+      orgDb.from('rooms').select('room_id, branch_id').order('branch_id').order('room_id'),
+    ])
+    if (!branchResult.error) setBranches(branchResult.data || [])
+    if (!roomResult.error)   setRooms(roomResult.data || [])
+
     let result = await orgDb.from('task_templates').select(NEW_TASK_SELECT).order('name')
     if (result.error && isSchemaError(result.error)) {
       setSchemaReady(false)
@@ -72,17 +101,15 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
     setLoading(false)
   }
 
-  useEffect(() => {
-    loadTemplates()
-  }, [revision])
+  useEffect(() => { loadTemplates() }, [revision])
 
   const visibleTemplates = useMemo(() => {
     const term = search.trim().toLowerCase()
     if (!term) return templates
-    return templates.filter((template) =>
-      template.name.toLowerCase().includes(term) ||
-      String(template.description || '').toLowerCase().includes(term) ||
-      sortedTasks(template).some((task) => task.task_name.toLowerCase().includes(term)),
+    return templates.filter((t) =>
+      t.name.toLowerCase().includes(term) ||
+      String(t.description || '').toLowerCase().includes(term) ||
+      sortedTasks(t).some((task) => task.task_name.toLowerCase().includes(term)),
     )
   }, [templates, search])
 
@@ -97,85 +124,73 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
       id: template.id,
       name: template.name,
       description: template.description || '',
-      tasks: sortedTasks(template).map((task) => ({
-        id: task.id,
-        task_name: task.task_name,
-        start_by: task.start_by || '',
-        finish_by: task.finish_by,
-        fields: [...(task.task_fields || [])]
-          .sort((left, right) => (left.sort_order || 0) - (right.sort_order || 0))
-          .map((field) => ({
-            id: field.id,
-            field_name: field.field_name,
-            default_value: field.default_value || '',
+      tasks: sortedTasks(template).map((task) => {
+        const allFields = [...(task.task_fields || [])]
+          .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))
+        const { branch, room } = extractBranchRoom(allFields)
+        return {
+          id: task.id,
+          task_name: task.task_name,
+          start_by: task.start_by || '',
+          finish_by: task.finish_by,
+          branch,
+          room,
+          fields: visibleFields(allFields).map((f) => ({
+            id: f.id,
+            field_name: f.field_name,
+            default_value: f.default_value || '',
           })),
-      })),
+        }
+      }),
     })
     setFormError('')
     setImportInfo(null)
   }
 
   function updateDraft(field, value) {
-    setDraft((current) => ({ ...current, [field]: value }))
+    setDraft((c) => ({ ...c, [field]: value }))
   }
 
   function updateTask(index, field, value) {
-    setDraft((current) => ({
-      ...current,
-      tasks: current.tasks.map((task, taskIndex) =>
-        taskIndex === index ? { ...task, [field]: value } : task,
-      ),
+    setDraft((c) => ({
+      ...c,
+      tasks: c.tasks.map((t, i) => i === index ? { ...t, [field]: value } : t),
     }))
   }
 
   function addTask() {
-    setDraft((current) => ({
-      ...current,
-      tasks: [...current.tasks, emptyTask()],
-    }))
+    setDraft((c) => ({ ...c, tasks: [...c.tasks, emptyTask()] }))
   }
 
   function removeTask(index) {
-    setDraft((current) => ({
-      ...current,
-      tasks: current.tasks.filter((_, taskIndex) => taskIndex !== index),
-    }))
+    setDraft((c) => ({ ...c, tasks: c.tasks.filter((_, i) => i !== index) }))
   }
 
   function addField(taskIndex) {
-    setDraft((current) => ({
-      ...current,
-      tasks: current.tasks.map((task, index) =>
-        index === taskIndex
-          ? { ...task, fields: [...task.fields, { field_name: '', default_value: '' }] }
-          : task,
+    setDraft((c) => ({
+      ...c,
+      tasks: c.tasks.map((t, i) =>
+        i === taskIndex ? { ...t, fields: [...t.fields, { field_name: '', default_value: '' }] } : t,
       ),
     }))
   }
 
-  function updateField(taskIndex, fieldIndex, field, value) {
-    setDraft((current) => ({
-      ...current,
-      tasks: current.tasks.map((task, index) =>
-        index === taskIndex
-          ? {
-              ...task,
-              fields: task.fields.map((item, itemIndex) =>
-                itemIndex === fieldIndex ? { ...item, [field]: value } : item,
-              ),
-            }
-          : task,
+  function updateField(taskIndex, fieldIndex, key, value) {
+    setDraft((c) => ({
+      ...c,
+      tasks: c.tasks.map((t, i) =>
+        i === taskIndex
+          ? { ...t, fields: t.fields.map((f, fi) => fi === fieldIndex ? { ...f, [key]: value } : f) }
+          : t,
       ),
     }))
   }
 
   function removeField(taskIndex, fieldIndex) {
-    setDraft((current) => ({
-      ...current,
-      tasks: current.tasks.map((task, index) =>
-        index === taskIndex
-          ? { ...task, fields: task.fields.filter((_, itemIndex) => itemIndex !== fieldIndex) }
-          : task,
+    setDraft((c) => ({
+      ...c,
+      tasks: c.tasks.map((t, i) =>
+        i === taskIndex ? { ...t, fields: t.fields.filter((_, fi) => fi !== fieldIndex) } : t,
       ),
     }))
   }
@@ -196,15 +211,14 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
         task_name: task.task_name,
         start_by: task.start_by,
         finish_by: task.finish_by,
-        fields: task.fields.map((field) => ({
-          field_name: field.field_name,
-          default_value: field.default_value,
-        })),
+        branch: '',
+        room: '',
+        fields: task.fields.map((f) => ({ field_name: f.field_name, default_value: f.default_value })),
       }))
-      setDraft((current) => ({
-        ...(current || emptyDraft()),
-        name: current?.name || file.name.replace(/\.[^.]+$/, ''),
-        description: current?.description || `Imported from ${imported.sheetName}`,
+      setDraft((c) => ({
+        ...(c || emptyDraft()),
+        name: c?.name || file.name.replace(/\.[^.]+$/, ''),
+        description: c?.description || `Imported from ${imported.sheetName}`,
         tasks,
       }))
       setImportInfo({
@@ -214,11 +228,9 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
         columns: imported.customColumns,
         issues: imported.issues,
       })
-      if (imported.issues.length) {
-        setFormError(imported.issues.slice(0, 3).join(' '))
-      }
-    } catch (importError) {
-      setFormError(importError.message)
+      if (imported.issues.length) setFormError(imported.issues.slice(0, 3).join(' '))
+    } catch (err) {
+      setFormError(err.message)
     } finally {
       setImporting(false)
     }
@@ -227,21 +239,16 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
   function validateDraft() {
     if (!draft.name.trim()) return 'Template name is required.'
     if (!draft.tasks.length) return 'Add at least one task.'
-    for (const [index, task] of draft.tasks.entries()) {
-      if (!task.task_name.trim()) return `Task ${index + 1} needs a name.`
-      if (!task.finish_by) return `Task ${index + 1} needs a finish time.`
-      if (schemaReady && task.start_by && task.start_by > task.finish_by) {
-        return `Task ${index + 1} starts after it finishes.`
-      }
+    for (const [i, task] of draft.tasks.entries()) {
+      if (!task.task_name.trim()) return `Task ${i + 1} needs a name.`
+      if (!task.finish_by) return `Task ${i + 1} needs a finish time.`
+      if (schemaReady && task.start_by && task.start_by > task.finish_by)
+        return `Task ${i + 1} starts after it finishes.`
       if (schemaReady) {
-        const rawNames = task.fields.map((field) => field.field_name.trim())
-        if (rawNames.some((name) => !name)) {
-          return `Task ${index + 1} has an unnamed custom field.`
-        }
-        const names = rawNames.map((name) => name.toLowerCase())
-        if (new Set(names).size !== names.length) {
-          return `Task ${index + 1} has duplicate custom field names.`
-        }
+        const rawNames = task.fields.map((f) => f.field_name.trim())
+        if (rawNames.some((n) => !n)) return `Task ${i + 1} has an unnamed custom field.`
+        const names = rawNames.map((n) => n.toLowerCase())
+        if (new Set(names).size !== names.length) return `Task ${i + 1} has duplicate custom field names.`
       }
     }
     return ''
@@ -263,47 +270,56 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
           .update({ name: draft.name.trim(), description: draft.description.trim() || null })
           .eq('id', templateId)
         if (updateError) throw updateError
-
         const { error: deleteError } = await orgDb
-          .from('template_tasks')
-          .delete()
-          .eq('template_id', templateId)
+          .from('template_tasks').delete().eq('template_id', templateId)
         if (deleteError) throw deleteError
       } else {
         const { data, error: insertError } = await orgDb
           .from('task_templates')
           .insert({ name: draft.name.trim(), description: draft.description.trim() || null })
-          .select('id')
-          .single()
+          .select('id').single()
         if (insertError) throw insertError
         templateId = data.id
       }
 
-      const taskRows = draft.tasks.map((task, index) => ({
+      const taskRows = draft.tasks.map((task, i) => ({
         template_id: templateId,
         task_name: task.task_name.trim(),
         finish_by: task.finish_by,
-        sort_order: index,
+        sort_order: i,
         ...(schemaReady ? { start_by: task.start_by || null } : {}),
       }))
       const { data: insertedTasks, error: taskError } = await orgDb
-        .from('template_tasks')
-        .insert(taskRows)
-        .select('id, sort_order')
+        .from('template_tasks').insert(taskRows).select('id, sort_order')
       if (taskError) throw taskError
 
       if (schemaReady) {
+        // Build field rows: branch/room as reserved fields + user custom fields
         const fieldRows = (insertedTasks || []).flatMap((inserted) => {
-          const source = draft.tasks.find((_, index) => index === inserted.sort_order)
+          const source = draft.tasks[inserted.sort_order]
           if (!source) return []
-          return source.fields
-            .filter((field) => field.field_name.trim())
-            .map((field, fieldIndex) => ({
-              task_id: inserted.id,
-              field_name: field.field_name.trim(),
-              default_value: field.default_value.trim() || null,
-              sort_order: fieldIndex,
-            }))
+          const rows = []
+          let sortOrder = 0
+          // Reserved branch field
+          if (source.branch) {
+            rows.push({ task_id: inserted.id, field_name: FIELD_BRANCH, default_value: source.branch, sort_order: sortOrder++ })
+          }
+          // Reserved room field
+          if (source.room) {
+            rows.push({ task_id: inserted.id, field_name: FIELD_ROOM, default_value: source.room, sort_order: sortOrder++ })
+          }
+          // User-defined custom fields
+          source.fields
+            .filter((f) => f.field_name.trim())
+            .forEach((f) => {
+              rows.push({
+                task_id: inserted.id,
+                field_name: f.field_name.trim(),
+                default_value: f.default_value.trim() || null,
+                sort_order: sortOrder++,
+              })
+            })
+          return rows
         })
         if (fieldRows.length) {
           const { error: fieldError } = await orgDb.from('task_fields').insert(fieldRows)
@@ -332,16 +348,14 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
     try {
       const orgDb = await db()
       const { error: deleteError } = await orgDb
-        .from('task_templates')
-        .delete()
-        .eq('id', template.id)
+        .from('task_templates').delete().eq('id', template.id)
       if (deleteError) setError(deleteError.message)
       else {
         await loadTemplates()
         await onTemplatesChanged?.()
       }
-    } catch (deleteErr) {
-      setError(deleteErr?.message || 'Unable to delete template.')
+    } catch (err) {
+      setError(err?.message || 'Unable to delete template.')
     }
   }
 
@@ -366,13 +380,9 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
           <button type="button" className="primary-button page-button" onClick={openCreate}>
             New template
           </button>
-          <input
-            ref={fileRef}
-            type="file"
+          <input ref={fileRef} type="file"
             accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            onChange={importExcel}
-            hidden
-          />
+            onChange={importExcel} hidden />
         </div>
       </div>
 
@@ -394,12 +404,8 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
         <div className="toolbar">
           <label className="search-field">
             <span className="sr-only">Search templates</span>
-            <input
-              type="search"
-              placeholder="Search templates or tasks..."
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
+            <input type="search" placeholder="Search templates or tasks..."
+              value={search} onChange={(e) => setSearch(e.target.value)} />
           </label>
           <span className="count-badge">{visibleTemplates.length} of {templates.length} templates</span>
         </div>
@@ -428,23 +434,34 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
                   <span className="count-badge">{tasks.length} tasks</span>
                 </div>
                 <ol className="template-summary">
-                  {tasks.map((task) => (
-                    <li key={task.id}>
-                      <div className="template-summary-main">
-                        <span>{task.task_name}</span>
-                        <time>
-                          {task.start_by ? `${task.start_by} – ${task.finish_by}` : task.finish_by}
-                        </time>
-                      </div>
-                      {schemaReady && (task.task_fields || []).length > 0 && (
-                        <div className="field-chips">
-                          {task.task_fields.map((field) => (
-                            <span className="field-chip" key={field.id}>{field.field_name}</span>
-                          ))}
+                  {tasks.map((task) => {
+                    const allFields = task.task_fields || []
+                    const { branch, room } = extractBranchRoom(allFields)
+                    const customFields = visibleFields(allFields)
+                    return (
+                      <li key={task.id}>
+                        <div className="template-summary-main">
+                          <span>{task.task_name}</span>
+                          <time>
+                            {task.start_by ? `${task.start_by} – ${task.finish_by}` : task.finish_by}
+                          </time>
                         </div>
-                      )}
-                    </li>
-                  ))}
+                        {(branch || room) && (
+                          <div className="field-chips" style={{ marginTop: 4 }}>
+                            {branch && <span className="field-chip">📍 {branch}</span>}
+                            {room   && <span className="field-chip">🚪 {room}</span>}
+                          </div>
+                        )}
+                        {schemaReady && customFields.length > 0 && (
+                          <div className="field-chips">
+                            {customFields.map((f) => (
+                              <span className="field-chip" key={f.id}>{f.field_name}</span>
+                            ))}
+                          </div>
+                        )}
+                      </li>
+                    )
+                  })}
                 </ol>
                 <div className="card-actions">
                   <button type="button" className="secondary-button" onClick={() => openEdit(template)}>Edit</button>
@@ -458,13 +475,8 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
 
       {draft && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setDraft(null)}>
-          <section
-            className="modal-sheet template-sheet"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="template-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
+          <section className="modal-sheet template-sheet" role="dialog" aria-modal="true"
+            aria-labelledby="template-title" onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-heading">
               <div>
                 <p className="eyebrow">{draft.id ? 'Edit' : 'Create'} template</p>
@@ -484,18 +496,18 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
               <div className="field-grid two">
                 <label>
                   <span className="field-label">Template name</span>
-                  <input value={draft.name} onChange={(event) => updateDraft('name', event.target.value)} />
+                  <input value={draft.name} onChange={(e) => updateDraft('name', e.target.value)} />
                 </label>
                 <label>
                   <span className="field-label">Description (optional)</span>
-                  <input value={draft.description} onChange={(event) => updateDraft('description', event.target.value)} />
+                  <input value={draft.description} onChange={(e) => updateDraft('description', e.target.value)} />
                 </label>
               </div>
 
               <div className="template-task-toolbar">
                 <div>
                   <h3>Tasks</h3>
-                  <p className="field-hint">Each task has a name, start time, finish time, and optional named fields.</p>
+                  <p className="field-hint">Each task has a name, times, optional branch/room, and custom fields.</p>
                 </div>
                 <div className="toolbar-actions">
                   <button type="button" className="text-button" onClick={downloadTaskWorkbook}>Sample Excel</button>
@@ -512,35 +524,70 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
                     <article className="template-task-card" key={task.id || `new-${index}`}>
                       <span className="task-number">{index + 1}</span>
                       <div className="template-task-main">
+
+                        {/* Row 1: name + times */}
                         <div className="field-grid three">
                           <label>
                             <span className="field-label">Task name</span>
-                            <input
-                              placeholder="e.g. Clean bathroom"
+                            <input placeholder="e.g. Clean bathroom"
                               value={task.task_name}
-                              onChange={(event) => updateTask(index, 'task_name', event.target.value)}
-                            />
+                              onChange={(e) => updateTask(index, 'task_name', e.target.value)} />
                           </label>
                           {schemaReady && (
                             <label>
                               <span className="field-label">Start time</span>
-                              <input
-                                type="time"
-                                value={task.start_by}
-                                onChange={(event) => updateTask(index, 'start_by', event.target.value)}
-                              />
+                              <input type="time" value={task.start_by}
+                                onChange={(e) => updateTask(index, 'start_by', e.target.value)} />
                             </label>
                           )}
                           <label>
                             <span className="field-label">Finish time</span>
-                            <input
-                              type="time"
-                              value={task.finish_by}
-                              onChange={(event) => updateTask(index, 'finish_by', event.target.value)}
-                            />
+                            <input type="time" value={task.finish_by}
+                              onChange={(e) => updateTask(index, 'finish_by', e.target.value)} />
                           </label>
                         </div>
 
+                        {/* Row 2: branch + room (always shown when org has rooms, independent of schema version) */}
+                        {branches.length > 0 && (
+                          <div className="field-grid two" style={{ marginTop: 10 }}>
+                            <label>
+                              <span className="field-label">Branch (optional)</span>
+                              <select value={task.branch}
+                                onChange={(e) => {
+                                  const val = e.target.value
+                                  updateTask(index, 'branch', val)
+                                  // Clear room if it no longer belongs to this branch
+                                  if (val && task.room) {
+                                    const stillValid = rooms.some(
+                                      (r) => r.room_id === task.room && r.branch_id === val
+                                    )
+                                    if (!stillValid) updateTask(index, 'room', '')
+                                  }
+                                }}>
+                                <option value="">— None —</option>
+                                {branches.map((b) => (
+                                  <option key={b.branch_id} value={b.branch_id}>{b.branch_id}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label>
+                              <span className="field-label">Room (optional)</span>
+                              <select value={task.room}
+                                onChange={(e) => updateTask(index, 'room', e.target.value)}>
+                                <option value="">— None —</option>
+                                {rooms
+                                  .filter((r) => !task.branch || r.branch_id === task.branch)
+                                  .map((r) => (
+                                    <option key={r.room_id} value={r.room_id}>
+                                      {r.room_id}{r.branch_id && !task.branch ? ` (${r.branch_id})` : ''}
+                                    </option>
+                                  ))}
+                              </select>
+                            </label>
+                          </div>
+                        )}
+
+                        {/* Row 3: custom fields */}
                         {schemaReady && (
                           <div className="task-custom-fields">
                             <div className="field-list-heading">
@@ -551,27 +598,20 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
                               <p className="field-hint">Need extra information for this task? Add a named field.</p>
                             ) : (
                               <div className="custom-field-list">
-                                {task.fields.map((field, fieldIndex) => (
-                                  <div className="custom-field-row" key={field.id || `new-${fieldIndex}`}>
+                                {task.fields.map((field, fi) => (
+                                  <div className="custom-field-row" key={field.id || `new-${fi}`}>
                                     <input
-                                      aria-label={`Field ${fieldIndex + 1} name for task ${index + 1}`}
+                                      aria-label={`Field ${fi + 1} name for task ${index + 1}`}
                                       placeholder="Field name (e.g. Room notes)"
                                       value={field.field_name}
-                                      onChange={(event) => updateField(index, fieldIndex, 'field_name', event.target.value)}
-                                    />
+                                      onChange={(e) => updateField(index, fi, 'field_name', e.target.value)} />
                                     <input
-                                      aria-label={`Default value for ${field.field_name || `field ${fieldIndex + 1}`}`}
+                                      aria-label={`Default value for ${field.field_name || `field ${fi + 1}`}`}
                                       placeholder="Default value (optional)"
                                       value={field.default_value}
-                                      onChange={(event) => updateField(index, fieldIndex, 'default_value', event.target.value)}
-                                    />
-                                    <button
-                                      type="button"
-                                      className="text-button danger"
-                                      onClick={() => removeField(index, fieldIndex)}
-                                    >
-                                      Remove
-                                    </button>
+                                      onChange={(e) => updateField(index, fi, 'default_value', e.target.value)} />
+                                    <button type="button" className="text-button danger"
+                                      onClick={() => removeField(index, fi)}>Remove</button>
                                   </div>
                                 ))}
                               </div>
@@ -579,14 +619,9 @@ export default function TemplatesManager({ embedded = false, onTemplatesChanged 
                           </div>
                         )}
                       </div>
-                      <button
-                        type="button"
-                        className="icon-button danger"
-                        aria-label={`Remove task ${index + 1}`}
-                        onClick={() => removeTask(index)}
-                      >
-                        ×
-                      </button>
+
+                      <button type="button" className="icon-button danger"
+                        aria-label={`Remove task ${index + 1}`} onClick={() => removeTask(index)}>×</button>
                     </article>
                   ))}
                 </div>

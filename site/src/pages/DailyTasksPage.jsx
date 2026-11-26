@@ -32,7 +32,7 @@ function sortTasks(tasks = []) {
 }
 
 function emptyDraft() {
-  return { task_name: '', start_by: '', finish_by: '', branch_id: '', room_id: '', fields: [] }
+  return { task_name: '', start_by: '', finish_by: '', fields: [] }
 }
 
 export default function DailyTasksPage() {
@@ -43,8 +43,6 @@ export default function DailyTasksPage() {
   const [assignments, setAssignments] = useState([])
   const [templates, setTemplates] = useState([])
   const [cleaners, setCleaners] = useState([])
-  const [branches, setBranches] = useState([])
-  const [rooms, setRooms] = useState([])
   const [tasks, setTasks] = useState([])
   const [selectedAssignment, setSelectedAssignment] = useState(null)
   const [workDate, setWorkDate] = useState(today())
@@ -88,7 +86,7 @@ export default function DailyTasksPage() {
       setLoading(false)
       return
     }
-    const [templateResult, cleanerResult, assignmentResult, branchResult, roomResult] = await Promise.all([
+    const [templateResult, cleanerResult, assignmentResult] = await Promise.all([
       orgDb.from('task_templates').select('id, name').order('name'),
       orgDb.from('members').select('id, full_name').eq('role', 'cleaner').eq('is_active', true).order('full_name'),
       workDate
@@ -98,11 +96,7 @@ export default function DailyTasksPage() {
             .eq('work_date', workDate)
             .order('id')
         : Promise.resolve({ data: [], error: null }),
-      orgDb.from('branches').select('branch_id').order('branch_id'),
-      orgDb.from('rooms').select('room_id, branch_id').order('branch_id').order('room_id'),
     ])
-    if (!branchResult.error) setBranches(branchResult.data || [])
-    if (!roomResult.error) setRooms(roomResult.data || [])
     if (templateResult.error || cleanerResult.error || assignmentResult.error) {
       setError(
         templateResult.error?.message ||
@@ -158,10 +152,16 @@ export default function DailyTasksPage() {
             : task.task_runs
               ? [task.task_runs]
               : []
+          const allFields = sortFields(task.daily_task_field_values || [])
+          // Extract reserved branch/room fields — show as task details, not custom fields
+          const branch = allFields.find((f) => f.field_name === '__branch__')?.field_value || task.branch_id || ''
+          const room   = allFields.find((f) => f.field_name === '__room__')?.field_value   || task.room_id   || ''
           return {
             ...task,
+            branch,
+            room,
             isCompleted: runs.some((run) => run.state === 'completed'),
-            fields: sortFields(task.daily_task_field_values || []),
+            fields: allFields.filter((f) => f.field_name !== '__branch__' && f.field_name !== '__room__'),
           }
         }),
       ),
@@ -365,8 +365,6 @@ export default function DailyTasksPage() {
       task_name: taskDraft.task_name.trim(),
       finish_by: taskDraft.finish_by,
       ...(schemaReady ? { start_by: taskDraft.start_by || null } : {}),
-      branch_id: taskDraft.branch_id || null,
-      room_id: taskDraft.room_id || null,
     }
 
     let dailyTaskId = taskDraft.id
@@ -602,21 +600,18 @@ export default function DailyTasksPage() {
                       key: 'task_name',
                       label: 'Task',
                       render: (task) => (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                          <strong>{task.task_name}</strong>
-                          {task.isCompleted && <StatusBadge status="completed" label="Completed" />}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                            <strong>{task.task_name}</strong>
+                            {task.isCompleted && <StatusBadge status="completed" label="Completed" />}
+                          </div>
+                          {(task.branch || task.room) && (
+                            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>
+                              {[task.branch, task.room].filter(Boolean).join(' · ')}
+                            </span>
+                          )}
                         </div>
                       ),
-                    },
-                    {
-                      key: 'branch_id',
-                      label: 'Work Track',
-                      render: (task) => task.branch_id || 'All',
-                    },
-                    {
-                      key: 'room_id',
-                      label: 'Location / Unit',
-                      render: (task) => task.room_id || '—',
                     },
                     {
                       key: 'start_by',
@@ -655,9 +650,9 @@ export default function DailyTasksPage() {
                           <strong>{task.task_name}</strong>
                           <div className="time-chip-group">
                             {task.isCompleted && <StatusBadge status="completed" label="Completed" />}
-                            {task.branch_id && <span className="time-chip">{task.branch_id}{task.room_id ? ` · ${task.room_id}` : ''}</span>}
                             {schemaReady && task.start_by && <span className="time-chip start">Starts {task.start_by}</span>}
                             <span className="time-chip">Finish {task.finish_by}</span>
+                            {task.branch && <span className="time-chip">📍 {task.branch}{task.room ? ` · ${task.room}` : ''}</span>}
                           </div>
                         </div>
                         {schemaReady && task.fields.length > 0 && (
@@ -731,52 +726,36 @@ export default function DailyTasksPage() {
                 </label>
               </div>
 
-              {(branches.length > 0 || rooms.length > 0) && (
-                <div className="field-grid two">
-                  <label>
-                    <span className="field-label">Work Track <small className="optional-label">(optional)</small></span>
-                    <select
-                      value={taskDraft.branch_id || ''}
-                      onChange={(event) =>
-                        setTaskDraft((current) => ({
-                          ...current,
-                          branch_id: event.target.value,
-                          room_id: '',
-                        }))
-                      }
-                    >
-                      <option value="">All Work Tracks</option>
-                      {branches.map((b) => (
-                        <option key={b.branch_id} value={b.branch_id}>{b.branch_id}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span className="field-label">Location / Unit <small className="optional-label">(optional)</small></span>
-                    <select
-                      value={taskDraft.room_id || ''}
-                      onChange={(event) => {
-                        const roomVal = event.target.value
-                        const matched = rooms.find(
-                          (r) => r.room_id === roomVal && (!taskDraft.branch_id || r.branch_id === taskDraft.branch_id),
-                        )
-                        setTaskDraft((current) => ({
-                          ...current,
-                          room_id: roomVal,
-                          branch_id: current.branch_id || matched?.branch_id || '',
-                        }))
-                      }}
-                    >
-                      <option value="">Any location / unit</option>
-                      {rooms
-                        .filter((r) => !taskDraft.branch_id || r.branch_id === taskDraft.branch_id)
-                        .map((r) => (
-                          <option key={`${r.branch_id}:${r.room_id}`} value={r.room_id}>
-                            {r.room_id} ({r.branch_id})
-                          </option>
-                        ))}
-                    </select>
-                  </label>
+              {(taskDraft.branch || taskDraft.room) && (
+                <div className="field-grid two" style={{ marginTop: 10 }}>
+                  {taskDraft.branch && (
+                    <div>
+                      <span className="field-label">Branch</span>
+                      <div style={{
+                        height: 40, display: 'flex', alignItems: 'center',
+                        padding: '0 12px', borderRadius: 10,
+                        border: '1.5px solid var(--color-border)',
+                        background: 'var(--color-surface-subtle)',
+                        fontSize: 13.5, color: 'var(--color-text-primary)',
+                      }}>
+                        {taskDraft.branch}
+                      </div>
+                    </div>
+                  )}
+                  {taskDraft.room && (
+                    <div>
+                      <span className="field-label">Room</span>
+                      <div style={{
+                        height: 40, display: 'flex', alignItems: 'center',
+                        padding: '0 12px', borderRadius: 10,
+                        border: '1.5px solid var(--color-border)',
+                        background: 'var(--color-surface-subtle)',
+                        fontSize: 13.5, color: 'var(--color-text-primary)',
+                      }}>
+                        {taskDraft.room}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

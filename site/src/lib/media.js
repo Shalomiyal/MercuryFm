@@ -302,6 +302,124 @@ export async function uploadWorkMedia({
   }
 }
 
+/**
+ * Uploads a photo for Room Status (Check In, Check Out, Ready inspection)
+ * to Supabase Storage: {schemaName}/{userId}/rooms/{roomId}/{status}_{timestamp}_{index}.jpg
+ * and records it in the tenant's media table.
+ */
+export async function uploadRoomStatusMedia({
+  file,
+  thumbFile,
+  schemaName,
+  userId,
+  roomId,
+  status,
+  index = 0,
+  width = null,
+  height = null,
+  onProgress = () => {},
+}) {
+  const ext = extensionForFile(file, 'photo')
+  const timestamp = Date.now()
+  const base = `${schemaName}/${userId}/rooms/${roomId}/${status}_${timestamp}_${index}`
+  const storagePath = `${base}.${ext}`
+  const thumbPath = `${base}_thumb.jpg`
+
+  onProgress(20)
+  const uploadedPaths = []
+
+  try {
+    const { error: mainUploadError } = await supabase.storage
+      .from(WORK_MEDIA_BUCKET)
+      .upload(storagePath, file, {
+        contentType: file.type || 'image/jpeg',
+        upsert: false,
+      })
+    if (mainUploadError) throw mainUploadError
+    uploadedPaths.push(storagePath)
+    onProgress(60)
+
+    let savedThumbPath = null
+    if (thumbFile) {
+      const { error: thumbError } = await supabase.storage
+        .from(WORK_MEDIA_BUCKET)
+        .upload(thumbPath, thumbFile, {
+          contentType: 'image/jpeg',
+          upsert: false,
+        })
+      if (!thumbError) {
+        uploadedPaths.push(thumbPath)
+        savedThumbPath = thumbPath
+      }
+    }
+    onProgress(85)
+
+    let mediaId = null
+    try {
+      const orgDb = await db()
+      const { data: mediaRow, error: insertError } = await orgDb
+        .from('media')
+        .insert({
+          kind: 'photo',
+          mime_type: (file.type || 'image/jpeg').split(';')[0].trim(),
+          size_bytes: file.size,
+          chunk_count: 0,
+          bucket: WORK_MEDIA_BUCKET,
+          storage_path: storagePath,
+          thumb_path: savedThumbPath,
+          duration_seconds: null,
+          width: width ? Math.round(width) : null,
+          height: height ? Math.round(height) : null,
+          complete: true,
+          created_by: userId,
+        })
+        .select('id')
+        .single()
+
+      if (insertError) {
+        const { data: retryRow, error: retryError } = await orgDb
+          .from('media')
+          .insert({
+            kind: 'photo',
+            mime_type: (file.type || 'image/jpeg').split(';')[0].trim(),
+            size_bytes: file.size,
+            chunk_count: 0,
+            bucket: WORK_MEDIA_BUCKET,
+            storage_path: storagePath,
+            thumb_path: savedThumbPath,
+            duration_seconds: null,
+            width: width ? Math.round(width) : null,
+            height: height ? Math.round(height) : null,
+            complete: true,
+            created_by: null,
+          })
+          .select('id')
+          .single()
+
+        if (!retryError) {
+          mediaId = retryRow?.id
+        }
+      } else {
+        mediaId = mediaRow?.id
+      }
+    } catch {
+      /* Media row insertion is best-effort */
+    }
+
+    onProgress(100)
+    return {
+      mediaId,
+      storagePath,
+      thumbPath: savedThumbPath,
+    }
+  } catch (error) {
+    if (uploadedPaths.length > 0) {
+      await supabase.storage.from(WORK_MEDIA_BUCKET).remove(uploadedPaths).catch(() => {})
+    }
+    throw new Error(friendlyUploadError(error))
+  }
+}
+
 // ── Legacy chunked DB upload (deprecated) ─────────────────────────────────────
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer)

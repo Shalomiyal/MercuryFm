@@ -54,14 +54,18 @@ export default function TaskDetailsDrawer({ open, onClose, task, cleanerName, te
                   <span>Template</span>
                   <strong>{templateName || 'Daily assignment'}</strong>
                 </div>
-                <div className="wt-drawer-meta">
-                  <span>Work Track / Branch</span>
-                  <strong>{task.branch_id || 'All branches'}</strong>
-                </div>
-                <div className="wt-drawer-meta">
-                  <span>Room</span>
-                  <strong>{task.room_id || 'General'}</strong>
-                </div>
+                {task.branch && (
+                  <div className="wt-drawer-meta">
+                    <span>Branch</span>
+                    <strong>{task.branch}</strong>
+                  </div>
+                )}
+                {task.room && (
+                  <div className="wt-drawer-meta">
+                    <span>Room</span>
+                    <strong>{task.room}</strong>
+                  </div>
+                )}
                 <div className="wt-drawer-meta">
                   <span>Start Window</span>
                   <strong>{task.start_by || 'Flexible'}</strong>

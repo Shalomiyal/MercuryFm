@@ -2,8 +2,16 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useDataRefresh } from '../contexts/DataRefreshContext'
 import { usePagination } from '../hooks/usePagination'
-import { db } from '../lib/db'
+import { db, resolveMySchema } from '../lib/db'
 import { formatDateTime, friendlyError } from '../lib/format'
+import { ROOM_STATUSES, setRoomStatus, statusLabel } from '../lib/rooms'
+import {
+  compressPhoto,
+  generatePhotoThumbnail,
+  getImageDimensions,
+  uploadRoomStatusMedia,
+} from '../lib/media'
+import CameraCapture from '../components/ui/CameraCapture'
 import DataTable from '../components/ui/DataTable'
 import EmptyState from '../components/ui/EmptyState'
 import LoadMoreButton from '../components/ui/LoadMoreButton'
@@ -12,25 +20,10 @@ import StatCard from '../components/ui/StatCard'
 import StatusBadge from '../components/ui/StatusBadge'
 import { useToast } from '../components/ui/ToastProvider'
 
-const STATUSES = [
-  ['check_in', 'Check in'],
-  ['check_out', 'Check out'],
-  ['clean_start', 'Clean start'],
-  ['clean_finished', 'Clean finished'],
-  ['ready', 'Ready'],
-]
-
-function statusLabel(status) {
-  return STATUSES.find(([value]) => value === status)?.[1] || status || 'No status'
-}
-
-function localDateTime(date = new Date()) {
-  const offset = date.getTimezoneOffset() * 60_000
-  return new Date(date.getTime() - offset).toISOString().slice(0, 16)
-}
+const CHECKIN_SLOT_LABELS = ['Photo 1: Bill', 'Photo 2: ID']
 
 export default function RoomStatusPage() {
-  const { profile } = useAuth()
+  const { profile, schemaName } = useAuth()
   const { revision } = useDataRefresh()
   const { toast } = useToast()
   const [rooms, setRooms] = useState([])
@@ -42,15 +35,21 @@ export default function RoomStatusPage() {
   const [sortDir, setSortDir] = useState('asc')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
-  const [selectedRoom, setSelectedRoom] = useState(null)
+
+  // New action modal state
+  const [actionRoom, setActionRoom] = useState(null)
+  const [actionType, setActionType] = useState(null) // 'check_in' | 'check_out' | 'ready'
+  const [photos, setPhotos] = useState([])
+  const [activeSlot, setActiveSlot] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [formError, setFormError] = useState('')
+
+  // History modal state
   const [historyRoom, setHistoryRoom] = useState(null)
   const [history, setHistory] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState('')
-  const [status, setStatus] = useState('ready')
-  const [statusDateTime, setStatusDateTime] = useState(localDateTime())
-  const [saving, setSaving] = useState(false)
-  const [formError, setFormError] = useState('')
 
   const canManageStatus =
     profile?.role === 'org_admin' || profile?.role === 'admin'
@@ -121,79 +120,138 @@ export default function RoomStatusPage() {
     }
   }
 
-  function openUpdate(room) {
+  function openActionModal(room, type) {
     if (!canManageStatus) {
       setError('Only organization admins and admins can update room status.')
       return
     }
-    setSelectedRoom(room)
-    setStatus(room.current_status || 'ready')
-    setStatusDateTime(localDateTime())
+    setActionRoom(room)
+    setActionType(type)
+    setPhotos([])
+    setActiveSlot(0)
+    setUploadProgress(0)
     setFormError('')
   }
 
-  async function saveStatus(event) {
-    event.preventDefault()
+  function closeActionModal() {
+    photos.forEach((p) => {
+      if (p?.previewUrl) URL.revokeObjectURL(p.previewUrl)
+    })
+    setActionRoom(null)
+    setActionType(null)
+    setPhotos([])
+    setActiveSlot(0)
+    setUploadProgress(0)
     setFormError('')
-    if (!profile?.id) {
-      setFormError('Your account profile could not be loaded.')
-      return
+  }
+
+  async function handlePhotoCapture(slotIndex, file) {
+    if (!file) return
+    setFormError('')
+    try {
+      const compressed = await compressPhoto(file)
+      const [dims, thumb] = await Promise.all([
+        getImageDimensions(compressed),
+        generatePhotoThumbnail(compressed),
+      ])
+      const previewUrl = URL.createObjectURL(compressed)
+
+      setPhotos((prev) => {
+        const next = [...prev]
+        if (next[slotIndex]?.previewUrl) {
+          URL.revokeObjectURL(next[slotIndex].previewUrl)
+        }
+        next[slotIndex] = {
+          file: compressed,
+          thumbFile: thumb,
+          previewUrl,
+          width: dims.width,
+          height: dims.height,
+        }
+        return next
+      })
+
+      const requiredCount = actionType === 'check_in' ? 2 : 1
+      if (slotIndex + 1 < requiredCount) {
+        setActiveSlot(slotIndex + 1)
+      }
+    } catch (err) {
+      setFormError(friendlyError(err))
     }
-    if (!selectedRoom || !status || !statusDateTime) {
-      setFormError('Choose a status and date/time.')
+  }
+
+  function handleRetake(slotIndex) {
+    setPhotos((prev) => {
+      const next = [...prev]
+      if (next[slotIndex]?.previewUrl) {
+        URL.revokeObjectURL(next[slotIndex].previewUrl)
+      }
+      next[slotIndex] = null
+      return next
+    })
+    setActiveSlot(slotIndex)
+  }
+
+  async function handleSaveAction(event) {
+    event?.preventDefault()
+    if (saving) return
+    setFormError('')
+
+    const requiredCount = actionType === 'check_in' ? 2 : 1
+    const readyPhotos = photos.filter((p) => p?.file)
+    if (readyPhotos.length < requiredCount) {
+      setFormError(`Please capture all ${requiredCount} required photo(s) before submitting.`)
       return
     }
 
     setSaving(true)
-    let orgDb
-    try {
-      orgDb = await db()
-    } catch (tenantError) {
-      setSaving(false)
-      setFormError(tenantError.message)
-      return
-    }
-    const { error: insertError } = await orgDb
-      .from('room_status_history')
-      .insert({
-        room_id: selectedRoom.room_id,
-        status,
-        status_time: new Date(statusDateTime).toISOString(),
-        created_by: profile.id,
-      })
-    setSaving(false)
+    setUploadProgress(5)
 
-    if (insertError) {
-      const isCreatedByFk =
-        insertError.message &&
-        /foreign key/.test(insertError.message) &&
-        /created_by/i.test(insertError.message)
-      if (isCreatedByFk) {
-        setSaving(true)
-        const { error: retryError } = await orgDb
-          .from('room_status_history')
-          .insert({
-            room_id: selectedRoom.room_id,
-            status,
-            status_time: new Date(statusDateTime).toISOString(),
-            created_by: null,
-          })
-        setSaving(false)
-        if (retryError) {
-          setFormError(retryError.message)
-          return
-        }
-        toast(`Room ${selectedRoom.room_id} updated to ${statusLabel(status)}`, { tone: 'success' })
-        setSelectedRoom(null)
-        await loadRooms()
-        return
+    try {
+      const activeSchema = schemaName || (await resolveMySchema())
+      const userId = profile?.id
+
+      // Upload each photo to storage & media table
+      for (let i = 0; i < requiredCount; i += 1) {
+        const photoItem = photos[i]
+        await uploadRoomStatusMedia({
+          file: photoItem.file,
+          thumbFile: photoItem.thumbFile,
+          schemaName: activeSchema,
+          userId,
+          roomId: actionRoom.room_id,
+          status: actionType,
+          index: i + 1,
+          width: photoItem.width,
+          height: photoItem.height,
+          onProgress: (pct) => {
+            const overall = Math.round(((i + pct / 100) / requiredCount) * 90)
+            setUploadProgress(Math.min(95, Math.max(5, overall)))
+          },
+        })
       }
-      setFormError(insertError.message)
-      return
+
+      setUploadProgress(95)
+
+      // Update room status with current timestamp
+      await setRoomStatus({
+        roomId: actionRoom.room_id,
+        status: actionType,
+        statusTime: new Date().toISOString(),
+        profileId: userId,
+      })
+
+      setUploadProgress(100)
+      toast(`Room ${actionRoom.room_id} status updated to ${statusLabel(actionType)}!`, {
+        tone: 'success',
+      })
+      closeActionModal()
+      await loadRooms()
+    } catch (err) {
+      setFormError(friendlyError(err))
+    } finally {
+      setSaving(false)
     }
-    toast(`Room ${selectedRoom.room_id} updated to ${statusLabel(status)}`, { tone: 'success' })
-    setSelectedRoom(null)
-    await loadRooms()
   }
 
   async function openHistory(room) {
@@ -260,18 +318,104 @@ export default function RoomStatusPage() {
       key: 'actions',
       label: 'Actions',
       align: 'right',
-      render: (room) => (
-        <div className="table-actions" style={{ justifyContent: 'flex-end' }}>
-          <button type="button" className="secondary-button" onClick={() => openUpdate(room)}>
-            Update
-          </button>
-          <button type="button" className="text-button" onClick={() => openHistory(room)}>
-            History
-          </button>
-        </div>
-      ),
+      render: (room) => {
+        const curStatus = room.current_status
+        let actionBtn = null
+
+        if (curStatus === 'ready') {
+          actionBtn = (
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => openActionModal(room, 'check_in')}
+              title="Guest check-in (2 photos required)"
+            >
+              Check In
+            </button>
+          )
+        } else if (curStatus === 'check_in') {
+          actionBtn = (
+            <button
+              type="button"
+              className="secondary-button"
+              style={{
+                borderColor: 'var(--color-warning, #f59e0b)',
+                color: 'var(--color-warning, #f59e0b)',
+              }}
+              onClick={() => openActionModal(room, 'check_out')}
+              title="Client checkout (1 photo required)"
+            >
+              Check Out
+            </button>
+          )
+        } else if (curStatus === 'check_out') {
+          actionBtn = (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled
+              style={{ opacity: 0.55, cursor: 'not-allowed' }}
+              title="Admin access disabled. Waiting for cleaning staff to start cleaning."
+            >
+              Awaiting Cleaner
+            </button>
+          )
+        } else if (curStatus === 'clean_start') {
+          actionBtn = (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled
+              style={{ opacity: 0.55, cursor: 'not-allowed' }}
+              title="Admin access disabled. Cleaning staff is currently cleaning this room."
+            >
+              Cleaning Active
+            </button>
+          )
+        } else if (curStatus === 'clean_finished') {
+          actionBtn = (
+            <button
+              type="button"
+              className="primary-button"
+              style={{
+                background: 'var(--color-success, #10b981)',
+                borderColor: 'var(--color-success, #10b981)',
+              }}
+              onClick={() => openActionModal(room, 'ready')}
+              title="Cleaning finished! Upload 1 photo to certify room is Ready."
+            >
+              Mark Ready
+            </button>
+          )
+        } else {
+          // No status yet
+          actionBtn = (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => openActionModal(room, 'ready')}
+              title="Initialize room to Ready status"
+            >
+              Mark Ready
+            </button>
+          )
+        }
+
+        return (
+          <div className="table-actions" style={{ justifyContent: 'flex-end', gap: 8 }}>
+            {actionBtn}
+            <button type="button" className="text-button" onClick={() => openHistory(room)}>
+              History
+            </button>
+          </div>
+        )
+      },
     },
   ]
+
+  const requiredPhotoCount = actionType === 'check_in' ? 2 : 1
+  const capturedCount = photos.filter((p) => p?.file).length
+  const allPhotosCaptured = capturedCount >= requiredPhotoCount
 
   return (
     <section className="content-page">
@@ -307,10 +451,9 @@ export default function RoomStatusPage() {
           </select>
           <select aria-label="Status filter" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
             <option value="all">All Statuses</option>
-            {STATUSES.map(([val, lbl]) => (
+            {ROOM_STATUSES.map(([val, lbl]) => (
               <option key={val} value={val}>{lbl}</option>
             ))}
-            <option value="none">No Status</option>
           </select>
         </div>
       </div>
@@ -343,43 +486,184 @@ export default function RoomStatusPage() {
         </>
       )}
 
-      {selectedRoom && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={() => setSelectedRoom(null)}>
-          <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="update-title" onMouseDown={(event) => event.stopPropagation()}>
+      {/* Action Modal for Check In (2 photos), Check Out (1 photo), Ready (1 photo) */}
+      {actionRoom && actionType && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={closeActionModal}>
+          <section
+            className="modal-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="action-modal-title"
+            style={{ maxWidth: 560 }}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             <div className="modal-heading">
               <div>
-                <p className="eyebrow">{selectedRoom.branch_id} · Room {selectedRoom.room_id}</p>
-                <h2 id="update-title">Update status</h2>
+                <p className="eyebrow">{actionRoom.branch_id} · Room {actionRoom.room_id}</p>
+                <h2 id="action-modal-title">
+                  {actionType === 'check_in' && 'Check In Room'}
+                  {actionType === 'check_out' && 'Check Out Room'}
+                  {actionType === 'ready' && 'Mark Room Ready'}
+                </h2>
+                <p style={{ fontSize: '13px', color: 'var(--color-muted)', marginTop: 4 }}>
+                  {actionType === 'check_in' && 'Capture 2 photos (Bill and Guest ID) to complete check-in.'}
+                  {actionType === 'check_out' && 'Take 1 checkout photo of room condition as client departs.'}
+                  {actionType === 'ready' && 'Verify cleaning and upload 1 photo to certify room is ready.'}
+                </p>
               </div>
-              <button type="button" className="icon-button" aria-label="Close" onClick={() => setSelectedRoom(null)}>×</button>
+              <button type="button" className="icon-button" aria-label="Close" onClick={closeActionModal}>×</button>
             </div>
-            <form className="status-form" onSubmit={saveStatus} noValidate>
-              <label htmlFor="room-status">Status</label>
-              <select id="room-status" value={status} onChange={(event) => setStatus(event.target.value)}>
-                {STATUSES.map(([value, label]) => (
-                  <option key={value} value={value}>{label}</option>
-                ))}
-              </select>
-              <label htmlFor="status-time">Status date and time</label>
-              <input
-                id="status-time"
-                type="datetime-local"
-                value={statusDateTime}
-                onChange={(event) => setStatusDateTime(event.target.value)}
-              />
+
+            <form className="status-form" onSubmit={handleSaveAction} noValidate>
+              {/* Photo slots header & counter */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <span className="field-label" style={{ margin: 0 }}>
+                  Required Photos ({capturedCount} of {requiredPhotoCount})
+                </span>
+                <span
+                  style={{
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    color: allPhotosCaptured ? 'var(--color-success, #10b981)' : 'var(--color-warning, #f59e0b)',
+                  }}
+                >
+                  {allPhotosCaptured ? '✓ All photos ready' : `Capture ${requiredPhotoCount - capturedCount} more`}
+                </span>
+              </div>
+
+              {/* Slot Cards */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {Array.from({ length: requiredPhotoCount }).map((_, slotIndex) => {
+                  const slotLabel = actionType === 'check_in'
+                    ? CHECKIN_SLOT_LABELS[slotIndex]
+                    : actionType === 'check_out'
+                      ? 'Checkout Condition Photo'
+                      : 'Ready Inspection Photo'
+                  const capturedPhoto = photos[slotIndex]
+                  const isSlotActive = activeSlot === slotIndex
+
+                  return (
+                    <div
+                      key={`slot-${slotIndex}`}
+                      style={{
+                        border: '1px solid var(--color-border)',
+                        borderRadius: 'var(--radius-md, 8px)',
+                        padding: 12,
+                        background: isSlotActive ? 'var(--color-surface, #1e2029)' : 'var(--color-surface-subtle, #14161f)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                        <span style={{ fontSize: '13px', fontWeight: 600 }}>{slotLabel}</span>
+                        {capturedPhoto?.file ? (
+                          <span style={{ fontSize: '12px', color: 'var(--color-success, #10b981)', fontWeight: 600 }}>
+                            ✓ Captured
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: '12px', color: 'var(--color-muted)' }}>
+                            Required
+                          </span>
+                        )}
+                      </div>
+
+                      {capturedPhoto?.file ? (
+                        <div className="upload-preview-box">
+                          <div className="upload-preview-header" style={{ marginBottom: 8 }}>
+                            <span className="upload-ready" style={{ fontSize: '12px' }}>Photo ready to upload</span>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={saving}
+                              style={{ padding: '4px 8px', fontSize: '12px' }}
+                              onClick={() => handleRetake(slotIndex)}
+                            >
+                              Retake
+                            </button>
+                          </div>
+                          {capturedPhoto.previewUrl && (
+                            <img
+                              src={capturedPhoto.previewUrl}
+                              alt={`Slot ${slotIndex + 1} preview`}
+                              className="cleaner-media-img"
+                              style={{ maxHeight: 200, width: '100%', objectFit: 'cover', borderRadius: 6 }}
+                            />
+                          )}
+                        </div>
+                      ) : isSlotActive ? (
+                        <div>
+                          <CameraCapture
+                            mode="photo"
+                            stampLabel={`Room ${actionRoom.room_id} · ${actionType === 'check_in' ? (slotIndex === 0 ? 'Check-in Bill' : 'Check-in ID') : actionType === 'check_out' ? 'Check-out' : 'Ready'}`}
+                            disabled={saving}
+                            onCapture={(capturedFile) => handlePhotoCapture(slotIndex, capturedFile)}
+                          />
+                          <p className="upload-help" style={{ marginTop: 6, textAlign: 'center' }}>
+                            Take a live photo using your camera. Gallery uploads are disabled.
+                          </p>
+                        </div>
+                      ) : (
+                        <div style={{ textAlign: 'center', padding: '12px 0' }}>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            style={{ fontSize: '13px' }}
+                            onClick={() => setActiveSlot(slotIndex)}
+                          >
+                            📷 Take {slotLabel}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
               {formError && <p className="form-error" role="alert">{formError}</p>}
-              <div className="modal-actions">
-                <button type="button" className="secondary-button" onClick={() => setSelectedRoom(null)}>Cancel</button>
-                <button type="submit" className="primary-button" disabled={saving}>{saving ? 'Saving...' : 'Save status'}</button>
+
+              {saving && uploadProgress > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', marginBottom: 4 }}>
+                    <span>Processing & uploading...</span>
+                    <span>{uploadProgress}%</span>
+                  </div>
+                  <div style={{ height: 6, background: 'var(--color-border)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'var(--color-primary, #6366f1)', transition: 'width 0.2s' }} />
+                  </div>
+                </div>
+              )}
+
+              <div className="modal-actions" style={{ marginTop: 16 }}>
+                <button type="button" className="secondary-button" disabled={saving} onClick={closeActionModal}>
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={!allPhotosCaptured || saving}
+                >
+                  {saving
+                    ? 'Saving...'
+                    : actionType === 'check_in'
+                      ? 'Complete Check-In'
+                      : actionType === 'check_out'
+                        ? 'Complete Check-Out'
+                        : 'Confirm Room Ready'}
+                </button>
               </div>
             </form>
           </section>
         </div>
       )}
 
+      {/* History Modal */}
       {historyRoom && (
         <div className="modal-backdrop" role="presentation" onMouseDown={() => setHistoryRoom(null)}>
-          <section className="modal-sheet history-sheet" role="dialog" aria-modal="true" aria-labelledby="history-title" onMouseDown={(event) => event.stopPropagation()}>
+          <section
+            className="modal-sheet history-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="history-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             <div className="modal-heading">
               <div>
                 <p className="eyebrow">{historyRoom.branch_id} · Room {historyRoom.room_id}</p>

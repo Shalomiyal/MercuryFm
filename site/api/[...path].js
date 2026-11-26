@@ -16,6 +16,7 @@ import setOrganizationActive from '../server/handlers/set-organization-active.js
 import signupUser from '../server/handlers/signup-user.js'
 import startSignup from '../server/handlers/start-signup.js'
 import verifyCode from '../server/handlers/verify-code.js'
+import updateRoomStatus from '../server/handlers/update-room-status.js'
 import mediaStart from '../server/handlers/media/start.js'
 import mediaChunk from '../server/handlers/media/chunk.js'
 import mediaComplete from '../server/handlers/media/complete.js'
@@ -40,6 +41,7 @@ const ROUTES = {
   'signup-user': signupUser,
   'start-signup': startSignup,
   'verify-code': verifyCode,
+  'update-room-status': updateRoomStatus,
   'media/start': mediaStart,
   'media/chunk': mediaChunk,
   'media/complete': mediaComplete,

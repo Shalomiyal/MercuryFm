@@ -20,6 +20,7 @@ import CameraCapture from '../components/ui/CameraCapture'
 import CleanerMediaPreview from '../components/ui/CleanerMediaPreview'
 import LoadMoreButton from '../components/ui/LoadMoreButton'
 import { formatTime, friendlyError } from '../lib/format'
+import { setRoomStatus, statusLabel } from '../lib/rooms'
 
 function today() {
   return new Date().toISOString().slice(0, 10)
@@ -34,6 +35,29 @@ function taskState(task) {
   const run = taskRunOf(task)
   if (!run) return 'not_started'
   return run.state === 'completed' ? 'completed' : 'in_progress'
+}
+
+function resolveTaskRoom(task, roomsList) {
+  if (!task || !Array.isArray(roomsList) || roomsList.length === 0) return null
+  if (task.room_id) {
+    return (
+      roomsList.find(
+        (r) => r.room_id === task.room_id && (!task.branch_id || r.branch_id === task.branch_id),
+      ) ||
+      roomsList.find((r) => r.room_id === task.room_id) ||
+      null
+    )
+  }
+  const name = String(task.task_name || '').trim()
+  if (!name) return null
+  return (
+    roomsList.find((r) => {
+      const rid = String(r.room_id || '').trim()
+      if (!rid) return false
+      const escaped = rid.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      return new RegExp(`(^|\\b|\\s)${escaped}(\\b|\\s|$)`, 'i').test(name)
+    }) || null
+  )
 }
 
 function isSchemaError(error) {
@@ -102,7 +126,7 @@ export default function CleanerTasksPage() {
     }
     const [branchResult, roomResult] = await Promise.all([
       orgDb.from('branches').select('branch_id').order('branch_id'),
-      orgDb.from('rooms').select('room_id, branch_id').order('branch_id').order('room_id'),
+      orgDb.from('rooms').select('room_id, branch_id, current_status').order('branch_id').order('room_id'),
     ])
     if (!branchResult.error) setBranches(branchResult.data || [])
     if (!roomResult.error) setRooms(roomResult.data || [])
@@ -156,14 +180,15 @@ export default function CleanerTasksPage() {
   const taskPagination = usePagination(visibleTasks.length, 12, 12)
 
   function openAction(task, nextAction) {
+    const resolved = resolveTaskRoom(task, rooms)
     setDetailsTask(null)
     setSelectedTask(task)
     setAction(nextAction)
     setMediaFile(null)
     setThumbFile(null)
     setMediaMeta({ durationSeconds: null, width: null, height: null })
-    setSelectedBranchId(task.branch_id || '')
-    setSelectedRoomId(task.room_id || '')
+    setSelectedBranchId(task.branch_id || resolved?.branch_id || '')
+    setSelectedRoomId(task.room_id || resolved?.room_id || '')
     setActionFieldDrafts((task.fields || []).map((field) => ({ ...field })))
     setProgress(0)
     setFormError('')
@@ -323,6 +348,21 @@ export default function CleanerTasksPage() {
         }
         const { error: insertError } = await orgDb.from('task_runs').insert(insertPayload)
         if (insertError) throw insertError
+
+        // Auto-update room status to clean_start
+        const targetRoom = selectedRoomId || selectedTask.room_id
+        if (targetRoom) {
+          try {
+            await setRoomStatus({
+              roomId: targetRoom,
+              status: 'clean_start',
+              statusTime: new Date().toISOString(),
+              profileId: cleanerId,
+            })
+          } catch (statusErr) {
+            console.warn('Could not auto-update room to clean_start:', statusErr)
+          }
+        }
       } else {
         const run = taskRunOf(selectedTask)
         if (!run) throw new Error('Start this task before finishing it.')
@@ -336,6 +376,21 @@ export default function CleanerTasksPage() {
           .eq('id', run.id)
           .eq('cleaner_id', cleanerId)
         if (updateError) throw updateError
+
+        // Auto-update room status to clean_finished
+        const targetRoom = selectedRoomId || selectedTask.room_id || run.room_id
+        if (targetRoom) {
+          try {
+            await setRoomStatus({
+              roomId: targetRoom,
+              status: 'clean_finished',
+              statusTime: new Date().toISOString(),
+              profileId: cleanerId,
+            })
+          } catch (statusErr) {
+            console.warn('Could not auto-update room to clean_finished:', statusErr)
+          }
+        }
       }
       if (action === 'finish') {
         for (const field of actionFieldDrafts) {
@@ -387,6 +442,12 @@ export default function CleanerTasksPage() {
           {taskPagination.visible(visibleTasks).map((task) => {
             const state = taskState(task)
             const run = taskRunOf(task)
+            const assignedRoom = resolveTaskRoom(task, rooms)
+            const effectiveRoomId = task.room_id || assignedRoom?.room_id || ''
+            const roomStatus = assignedRoom?.current_status
+            const isRoomCheckedOut = roomStatus === 'check_out'
+            const isLocked = state === 'not_started' && Boolean(effectiveRoomId) && !isRoomCheckedOut
+
             return (
               <article className="cleaner-task-card" key={task.id}>
                 <div className="cleaner-task-heading">
@@ -402,6 +463,44 @@ export default function CleanerTasksPage() {
                 </div>
                 {run?.started_at && <p className="task-meta">Started {formatTime(run.started_at)}</p>}
                 {run?.finished_at && <p className="task-meta">Finished {formatTime(run.finished_at)}</p>}
+
+                {isLocked && (
+                  <div
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: 6,
+                      background: 'rgba(239, 68, 68, 0.1)',
+                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                      color: '#f87171',
+                      fontSize: '12px',
+                      marginBottom: 10,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <span>🔒</span>
+                    <span>
+                      Room {effectiveRoomId} is currently <strong>{statusLabel(roomStatus)}</strong>. Cleaning unlocks once the room is Checked Out.
+                    </span>
+                  </div>
+                )}
+
+                {!isLocked && Boolean(effectiveRoomId) && isRoomCheckedOut && state === 'not_started' && (
+                  <div
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      background: 'rgba(16, 185, 129, 0.1)',
+                      border: '1px solid rgba(16, 185, 129, 0.25)',
+                      color: '#34d399',
+                      fontSize: '12px',
+                      marginBottom: 10,
+                    }}
+                  >
+                    ✓ Room {effectiveRoomId} checked out. Ready for cleaning.
+                  </div>
+                )}
                 {(run?.start_photo_id || run?.finish_video_id) && (
                   <div className="cleaner-media-grid">
                     {run?.start_photo_id && (
@@ -438,10 +537,26 @@ export default function CleanerTasksPage() {
                 )}
                 <div className="card-actions">
                   {state === 'not_started' && (
-                    <button type="button" className="primary-button task-action" onClick={() => openAction(task, 'start')}>Start task</button>
+                    isLocked ? (
+                      <button
+                        type="button"
+                        className="secondary-button task-action"
+                        disabled
+                        style={{ opacity: 0.55, cursor: 'not-allowed' }}
+                        title={`Room ${effectiveRoomId} is currently "${statusLabel(roomStatus)}". It must be Checked Out before cleaning can start.`}
+                      >
+                        🔒 Locked ({statusLabel(roomStatus)})
+                      </button>
+                    ) : (
+                      <button type="button" className="primary-button task-action" onClick={() => openAction(task, 'start')}>
+                        Start task
+                      </button>
+                    )
                   )}
                   {state === 'in_progress' && (
-                    <button type="button" className="primary-button task-action" onClick={() => openAction(task, 'finish')}>Finish task</button>
+                    <button type="button" className="primary-button task-action" onClick={() => openAction(task, 'finish')}>
+                      Finish task
+                    </button>
                   )}
                   {state === 'completed' && <button type="button" className="secondary-button task-action" disabled>Completed</button>}
                 </div>
@@ -466,44 +581,24 @@ export default function CleanerTasksPage() {
               <button type="button" className="icon-button" aria-label="Close" onClick={() => setSelectedTask(null)}>×</button>
             </div>
             <form className="status-form" onSubmit={saveAction} noValidate>
-              {action === 'start' && !selectedTask.room_id && (branches.length > 0 || rooms.length > 0) && (
+              {(selectedBranchId || selectedRoomId || selectedTask.branch_id || selectedTask.room_id) && (
                 <div className="field-grid two">
-                  <label>
-                    <span className="field-label">Work Track <small className="optional-label">(optional)</small></span>
-                    <select
-                      value={selectedBranchId}
-                      onChange={(e) => {
-                        setSelectedBranchId(e.target.value)
-                        setSelectedRoomId('')
-                      }}
-                    >
-                      <option value="">Select work track</option>
-                      {branches.map((b) => (
-                        <option key={b.branch_id} value={b.branch_id}>{b.branch_id}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span className="field-label">Location / Unit <small className="optional-label">(optional)</small></span>
-                    <select
-                      value={selectedRoomId}
-                      onChange={(e) => {
-                        const roomVal = e.target.value
-                        setSelectedRoomId(roomVal)
-                        const matched = rooms.find((r) => r.room_id === roomVal && (!selectedBranchId || r.branch_id === selectedBranchId))
-                        if (matched && !selectedBranchId) setSelectedBranchId(matched.branch_id)
-                      }}
-                    >
-                      <option value="">Select location / unit</option>
-                      {rooms
-                        .filter((r) => !selectedBranchId || r.branch_id === selectedBranchId)
-                        .map((r) => (
-                          <option key={`${r.branch_id}:${r.room_id}`} value={r.room_id}>
-                            {r.room_id} ({r.branch_id})
-                          </option>
-                        ))}
-                    </select>
-                  </label>
+                  {(selectedBranchId || selectedTask.branch_id) && (
+                    <div>
+                      <span className="field-label">Work Track</span>
+                      <div style={{ padding: '8px 12px', borderRadius: 6, background: 'var(--color-surface-subtle)', border: '1px solid var(--color-border)', fontSize: '13px', fontWeight: 600 }}>
+                        {selectedBranchId || selectedTask.branch_id}
+                      </div>
+                    </div>
+                  )}
+                  {(selectedRoomId || selectedTask.room_id) && (
+                    <div>
+                      <span className="field-label">Location / Unit</span>
+                      <div style={{ padding: '8px 12px', borderRadius: 6, background: 'var(--color-surface-subtle)', border: '1px solid var(--color-border)', fontSize: '13px', fontWeight: 600 }}>
+                        Room {selectedRoomId || selectedTask.room_id}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
               <span className="field-label">

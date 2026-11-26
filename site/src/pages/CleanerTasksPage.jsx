@@ -350,18 +350,17 @@ export default function CleanerTasksPage() {
         if (insertError) throw insertError
 
         // Auto-update room status to clean_start
-        const targetRoom = selectedRoomId || selectedTask.room_id
+        const targetRoom =
+          selectedRoomId ||
+          selectedTask.room_id ||
+          resolveTaskRoom(selectedTask, rooms)?.room_id
         if (targetRoom) {
-          try {
-            await setRoomStatus({
-              roomId: targetRoom,
-              status: 'clean_start',
-              statusTime: new Date().toISOString(),
-              profileId: cleanerId,
-            })
-          } catch (statusErr) {
-            console.warn('Could not auto-update room to clean_start:', statusErr)
-          }
+          await setRoomStatus({
+            roomId: targetRoom,
+            status: 'clean_start',
+            statusTime: new Date().toISOString(),
+            profileId: cleanerId,
+          })
         }
       } else {
         const run = taskRunOf(selectedTask)
@@ -378,18 +377,18 @@ export default function CleanerTasksPage() {
         if (updateError) throw updateError
 
         // Auto-update room status to clean_finished
-        const targetRoom = selectedRoomId || selectedTask.room_id || run.room_id
+        const targetRoom =
+          selectedRoomId ||
+          selectedTask.room_id ||
+          run.room_id ||
+          resolveTaskRoom(selectedTask, rooms)?.room_id
         if (targetRoom) {
-          try {
-            await setRoomStatus({
-              roomId: targetRoom,
-              status: 'clean_finished',
-              statusTime: new Date().toISOString(),
-              profileId: cleanerId,
-            })
-          } catch (statusErr) {
-            console.warn('Could not auto-update room to clean_finished:', statusErr)
-          }
+          await setRoomStatus({
+            roomId: targetRoom,
+            status: 'clean_finished',
+            statusTime: new Date().toISOString(),
+            profileId: cleanerId,
+          })
         }
       }
       if (action === 'finish') {

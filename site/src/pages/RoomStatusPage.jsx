@@ -210,11 +210,12 @@ export default function RoomStatusPage() {
     try {
       const activeSchema = schemaName || (await resolveMySchema())
       const userId = profile?.id
+      let firstMediaId = null
 
       // Upload each photo to storage & media table
       for (let i = 0; i < requiredCount; i += 1) {
         const photoItem = photos[i]
-        await uploadRoomStatusMedia({
+        const result = await uploadRoomStatusMedia({
           file: photoItem.file,
           thumbFile: photoItem.thumbFile,
           schemaName: activeSchema,
@@ -229,16 +230,19 @@ export default function RoomStatusPage() {
             setUploadProgress(Math.min(95, Math.max(5, overall)))
           },
         })
+        // Keep the first photo's mediaId to link with the status history row
+        if (i === 0 && result?.mediaId) firstMediaId = result.mediaId
       }
 
       setUploadProgress(95)
 
-      // Update room status with current timestamp
+      // Update room status — link the first uploaded photo when available
       await setRoomStatus({
         roomId: actionRoom.room_id,
         status: actionType,
         statusTime: new Date().toISOString(),
         profileId: userId,
+        mediaId: firstMediaId,
       })
 
       setUploadProgress(100)
@@ -402,9 +406,16 @@ export default function RoomStatusPage() {
         }
 
         return (
-          <div className="table-actions" style={{ justifyContent: 'flex-end', gap: 8 }}>
+          <div
+            className="table-actions"
+            style={{ display: 'inline-flex', justifyContent: 'flex-end', alignItems: 'center', gap: 14 }}
+          >
             {actionBtn}
-            <button type="button" className="text-button" onClick={() => openHistory(room)}>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => openHistory(room)}
+            >
               History
             </button>
           </div>

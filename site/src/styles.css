@@ -735,6 +735,8 @@ dialog.dialog {
 .modal-sheet,
 .dialog .login-card {
   width: min(460px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
   border-radius: 20px;
   background: var(--color-surface);
   padding: 32px;
@@ -1933,6 +1935,9 @@ dialog.dialog {
   font-size: 12px;
 }
 .table-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
   white-space: nowrap;
 }
 .task-action {

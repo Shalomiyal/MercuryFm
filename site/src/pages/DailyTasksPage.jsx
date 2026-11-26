@@ -46,6 +46,7 @@ export default function DailyTasksPage() {
   const [tasks, setTasks] = useState([])
   const [selectedAssignment, setSelectedAssignment] = useState(null)
   const [workDate, setWorkDate] = useState(today())
+  const [finishDate, setFinishDate] = useState(today())
   const [templateId, setTemplateId] = useState('')
   const [cleanerId, setCleanerId] = useState('')
   const [assignmentSearch, setAssignmentSearch] = useState('')
@@ -197,85 +198,120 @@ export default function DailyTasksPage() {
       setFormError('Choose a date, template, and cleaner.')
       return
     }
+    if (finishDate < workDate) {
+      setFormError('Finish date cannot be before start date.')
+      return
+    }
     setSaving(true)
+
+    // Build list of dates in range
+    const dates = []
+    const cursor = new Date(workDate)
+    const end = new Date(finishDate)
+    while (cursor <= end) {
+      dates.push(cursor.toISOString().slice(0, 10))
+      cursor.setDate(cursor.getDate() + 1)
+    }
+
     try {
       const orgDb = await db()
       const template = Number(templateId)
-      let assignment = null
+      let lastAssignment = null
 
-      // Preferred path: one idempotent call. Re-assigning the same template to
-      // the same cleaner/date reuses the existing day and its admin-added tasks.
-      const rpcResult = await supabase.rpc('assign_template_tasks', {
-        p_work_date: workDate,
-        p_cleaner_id: cleanerId,
-        p_template_id: template,
-      })
-      if (!rpcResult.error && rpcResult.data) {
-        assignment = {
-          id: Number(rpcResult.data),
-          work_date: workDate,
-          template_id: template,
-          cleaner_id: cleanerId,
-        }
-      } else if (rpcResult.error && !isMissingRpc(rpcResult.error)) {
-        setFormError(rpcResult.error.message)
-        setSaving(false)
-        return
-      }
+      for (const date of dates) {
+        let assignment = null
 
-      // Fallback for databases where the new migration has not been applied.
-      if (!assignment) {
-        const existing = await findAssignment(orgDb, template)
-        if (existing.error) {
-          setFormError(existing.error.message)
+        const rpcResult = await supabase.rpc('assign_template_tasks', {
+          p_work_date: date,
+          p_cleaner_id: cleanerId,
+          p_template_id: template,
+        })
+        if (!rpcResult.error && rpcResult.data) {
+          assignment = {
+            id: Number(rpcResult.data),
+            work_date: date,
+            template_id: template,
+            cleaner_id: cleanerId,
+          }
+        } else if (rpcResult.error && !isMissingRpc(rpcResult.error)) {
+          setFormError(rpcResult.error.message)
           setSaving(false)
           return
         }
-        if (existing.data) {
-          assignment = existing.data
-        } else {
-          const inserted = await orgDb
+
+        // Fallback for databases where the new migration has not been applied.
+        if (!assignment) {
+          const existing = await orgDb
             .from('daily_assignments')
-            .insert({ work_date: workDate, template_id: template, cleaner_id: cleanerId })
             .select('id, work_date, template_id, cleaner_id')
-            .single()
-          if (inserted.error && !isDuplicate(inserted.error)) {
-            setFormError(inserted.error.message)
+            .eq('work_date', date)
+            .eq('cleaner_id', cleanerId)
+            .eq('template_id', template)
+            .order('id').limit(1).maybeSingle()
+          if (existing.error) {
+            setFormError(existing.error.message)
             setSaving(false)
             return
           }
-          if (inserted.data) {
-            const { error: loadError } = await orgDb.rpc('load_template_tasks', {
-              p_assignment: inserted.data.id,
-            })
-            if (loadError) {
-              setFormError(loadError.message)
-              setSaving(false)
-              return
-            }
-            assignment = inserted.data
+          if (existing.data) {
+            assignment = existing.data
           } else {
-            // Another tab created it between the read and the insert.
-            const raced = await findAssignment(orgDb, template)
-            if (raced.error || !raced.data) {
-              setFormError(raced.error?.message || 'Could not open this assignment.')
+            const inserted = await orgDb
+              .from('daily_assignments')
+              .insert({ work_date: date, template_id: template, cleaner_id: cleanerId })
+              .select('id, work_date, template_id, cleaner_id')
+              .single()
+            if (inserted.error && !isDuplicate(inserted.error)) {
+              setFormError(inserted.error.message)
               setSaving(false)
               return
             }
-            assignment = raced.data
+            if (inserted.data) {
+              const { error: loadError } = await orgDb.rpc('load_template_tasks', {
+                p_assignment: inserted.data.id,
+              })
+              if (loadError) {
+                setFormError(loadError.message)
+                setSaving(false)
+                return
+              }
+              assignment = inserted.data
+            } else {
+              const raced = await orgDb
+                .from('daily_assignments')
+                .select('id, work_date, template_id, cleaner_id')
+                .eq('work_date', date)
+                .eq('cleaner_id', cleanerId)
+                .eq('template_id', template)
+                .order('id').limit(1).maybeSingle()
+              if (raced.data) assignment = raced.data
+            }
           }
         }
+
+        if (assignment) lastAssignment = assignment
       }
 
       setSaving(false)
       await loadLookups()
-      await openTasks(assignment)
+      // Open tasks for the first date in the range
+      if (lastAssignment) {
+        const firstAssignment = dates.length === 1
+          ? lastAssignment
+          : (await (await db())
+              .from('daily_assignments')
+              .select('id, work_date, template_id, cleaner_id')
+              .eq('work_date', workDate)
+              .eq('cleaner_id', cleanerId)
+              .eq('template_id', template)
+              .order('id').limit(1).maybeSingle()).data || lastAssignment
+        await openTasks(firstAssignment)
+      }
     } catch (requestError) {
       setFormError(requestError.message)
       setSaving(false)
     }
   }
-
   function openTaskDraft(task = null) {
     setFormError('')
     setTaskDraft(
@@ -467,10 +503,31 @@ export default function DailyTasksPage() {
             </div>
           </div>
           <form className="assignment-form" onSubmit={assignTemplate} noValidate>
-            <label>
-              <span className="field-label">Work date</span>
-              <input id="work-date" type="date" value={workDate} onChange={(event) => setWorkDate(event.target.value)} />
-            </label>
+            <div className="field-grid two">
+              <label>
+                <span className="field-label">Start date</span>
+                <input
+                  id="work-date"
+                  type="date"
+                  value={workDate}
+                  onChange={(event) => {
+                    const val = event.target.value
+                    setWorkDate(val)
+                    if (finishDate < val) setFinishDate(val)
+                  }}
+                />
+              </label>
+              <label>
+                <span className="field-label">Finish date</span>
+                <input
+                  id="finish-date"
+                  type="date"
+                  value={finishDate}
+                  min={workDate}
+                  onChange={(event) => setFinishDate(event.target.value)}
+                />
+              </label>
+            </div>
             <div className="field-block">
               <div className="field-label-row">
                 <label className="field-label" htmlFor="template-select">Template</label>
@@ -512,7 +569,7 @@ export default function DailyTasksPage() {
             </label>
             {formError && !taskDraft && <p className="form-error" role="alert">{formError}</p>}
             <button type="submit" className="primary-button" disabled={saving || !templateId || !cleanerId}>
-              {saving ? 'Loading tasks...' : 'Assign template'}
+              {saving ? 'Assigning...' : workDate === finishDate ? 'Assign template' : `Assign ${Math.round((new Date(finishDate) - new Date(workDate)) / 86400000) + 1} days`}
             </button>
           </form>
 

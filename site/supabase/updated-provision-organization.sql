@@ -78,7 +78,9 @@ begin
     create table %1$I.daily_tasks (
       id bigint generated always as identity primary key,
       assignment_id bigint not null references %1$I.daily_assignments(id) on delete cascade,
-      task_name text not null, finish_by time not null
+      task_name text not null, finish_by time not null,
+      branch_id text,
+      room_id text
     );
 
     create function %1$I.load_template_tasks(p_assignment bigint) returns void
@@ -92,14 +94,21 @@ begin
     $b$;
 
     create table %1$I.media (
-      id          uuid primary key default gen_random_uuid(),
-      kind        text not null check (kind in ('photo','video')),
-      mime_type   text not null,
-      size_bytes  int  not null,
-      chunk_count int  not null,
-      complete    boolean not null default false,
-      created_by  uuid references %1$I.members(id),
-      created_at  timestamptz not null default now()
+      id               uuid primary key default gen_random_uuid(),
+      kind             text not null check (kind in ('photo','video')),
+      mime_type        text not null,
+      size_bytes       int  not null,
+      chunk_count      int  default 0,
+      bucket           text default 'work-media',
+      storage_path     text,
+      thumb_path       text,
+      duration_seconds numeric,
+      width            int,
+      height           int,
+      complete         boolean not null default false,
+      created_by       uuid references %1$I.members(id),
+      created_at       timestamptz not null default now(),
+      constraint media_storage_or_chunks_check check (storage_path is not null or chunk_count > 0)
     );
     create table %1$I.media_chunks (
       media_id    uuid not null references %1$I.media(id) on delete cascade,
@@ -113,6 +122,8 @@ begin
       daily_task_id  bigint not null references %1$I.daily_tasks(id) on delete cascade,
       run_date       date not null default current_date,
       cleaner_id     uuid not null references %1$I.members(id),
+      branch_id      text,
+      room_id        text,
       started_at     timestamptz,
       start_photo_id uuid references %1$I.media(id),
       finished_at    timestamptz,
@@ -120,6 +131,8 @@ begin
       state          public.task_state not null default 'in_progress',
       unique (daily_task_id)
     );
+    create index task_runs_run_date_cleaner_idx on %1$I.task_runs (run_date, cleaner_id);
+    create index task_runs_started_at_idx on %1$I.task_runs (started_at desc);
 
     alter table %1$I.members               enable row level security;
     alter table %1$I.branches            enable row level security;
@@ -155,6 +168,7 @@ begin
 
     create policy media_staff on %1$I.media for select using (public.is_org_staff(%1$L));
     create policy media_own   on %1$I.media for select using (public.in_org(%1$L) and created_by = auth.uid());
+    create policy media_insert_own on %1$I.media for insert with check (public.in_org(%1$L) and created_by = auth.uid());
 
     grant usage on schema %1$I to authenticated;
     grant select, insert, update, delete on all tables in schema %1$I to authenticated;
@@ -166,6 +180,7 @@ begin
   $t$, s);
 
   perform public.ensure_tenant_members(s, oid);
+  perform public.apply_work_media_to_schema(s);
   perform public.refresh_exposed_schemas();
   return oid;
 end $fn$;

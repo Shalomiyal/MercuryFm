@@ -1,10 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../contexts/AuthContext'
 import { useDataRefresh } from '../contexts/DataRefreshContext'
-import { db } from '../lib/db'
 import { usePagination } from '../hooks/usePagination'
-import LoadMoreButton from '../components/ui/LoadMoreButton'
+import { db } from '../lib/db'
 import { formatDateTime, friendlyError } from '../lib/format'
+import DataTable from '../components/ui/DataTable'
+import EmptyState from '../components/ui/EmptyState'
+import LoadMoreButton from '../components/ui/LoadMoreButton'
+import PageHeader from '../components/ui/PageHeader'
+import StatCard from '../components/ui/StatCard'
+import StatusBadge from '../components/ui/StatusBadge'
+import { useToast } from '../components/ui/ToastProvider'
 
 const STATUSES = [
   ['check_in', 'Check in'],
@@ -26,9 +32,14 @@ function localDateTime(date = new Date()) {
 export default function RoomStatusPage() {
   const { profile } = useAuth()
   const { revision } = useDataRefresh()
+  const { toast } = useToast()
   const [rooms, setRooms] = useState([])
   const [branches, setBranches] = useState([])
   const [branch, setBranch] = useState('all')
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [search, setSearch] = useState('')
+  const [sortBy, setSortBy] = useState('room_id')
+  const [sortDir, setSortDir] = useState('asc')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [selectedRoom, setSelectedRoom] = useState(null)
@@ -44,7 +55,7 @@ export default function RoomStatusPage() {
   const canManageStatus =
     profile?.role === 'org_admin' || profile?.role === 'admin'
 
-  async function loadRooms() {
+  const loadRooms = useCallback(async () => {
     setLoading(true)
     setError('')
     let orgDb
@@ -74,17 +85,41 @@ export default function RoomStatusPage() {
       setRooms(roomData || [])
     }
     setLoading(false)
-  }
+  }, [])
 
   useEffect(() => {
     loadRooms()
-  }, [revision])
+  }, [loadRooms, revision])
 
-  const visibleRooms = useMemo(
-    () => (branch === 'all' ? rooms : rooms.filter((room) => room.branch_id === branch)),
-    [rooms, branch],
-  )
+  const visibleRooms = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    const filtered = rooms.filter((room) => {
+      if (branch !== 'all' && room.branch_id !== branch) return false
+      if (statusFilter !== 'all' && (room.current_status || 'none') !== statusFilter) return false
+      if (term) {
+        const hay = `${room.room_id} ${room.branch_id} ${room.current_status || ''}`.toLowerCase()
+        if (!hay.includes(term)) return false
+      }
+      return true
+    })
+    return [...filtered].sort((a, b) => {
+      const valA = String(a[sortBy] || '')
+      const valB = String(b[sortBy] || '')
+      const cmp = valA.localeCompare(valB, undefined, { numeric: true })
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+  }, [rooms, branch, statusFilter, search, sortBy, sortDir])
+
   const roomPagination = usePagination(visibleRooms.length, 15, 15)
+
+  function handleSort(columnKey) {
+    if (sortBy === columnKey) {
+      setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortBy(columnKey)
+      setSortDir('asc')
+    }
+  }
 
   function openUpdate(room) {
     if (!canManageStatus) {
@@ -129,9 +164,34 @@ export default function RoomStatusPage() {
     setSaving(false)
 
     if (insertError) {
+      const isCreatedByFk =
+        insertError.message &&
+        /foreign key/.test(insertError.message) &&
+        /created_by/i.test(insertError.message)
+      if (isCreatedByFk) {
+        setSaving(true)
+        const { error: retryError } = await orgDb
+          .from('room_status_history')
+          .insert({
+            room_id: selectedRoom.room_id,
+            status,
+            status_time: new Date(statusDateTime).toISOString(),
+            created_by: null,
+          })
+        setSaving(false)
+        if (retryError) {
+          setFormError(retryError.message)
+          return
+        }
+        toast(`Room ${selectedRoom.room_id} updated to ${statusLabel(status)}`, { tone: 'success' })
+        setSelectedRoom(null)
+        await loadRooms()
+        return
+      }
       setFormError(insertError.message)
       return
     }
+    toast(`Room ${selectedRoom.room_id} updated to ${statusLabel(status)}`, { tone: 'success' })
     setSelectedRoom(null)
     await loadRooms()
   }
@@ -162,73 +222,125 @@ export default function RoomStatusPage() {
     setHistoryLoading(false)
   }
 
+  const readyCount = rooms.filter((r) => r.current_status === 'ready').length
+  const cleaningCount = rooms.filter((r) => r.current_status === 'clean_start').length
+  const checkoutCount = rooms.filter((r) => r.current_status === 'check_out').length
+
+  const columns = [
+    {
+      key: 'room_id',
+      label: 'Room / Unit',
+      sortable: true,
+      render: (room) => <strong>{room.room_id}</strong>,
+    },
+    {
+      key: 'branch_id',
+      label: 'Work Track',
+      sortable: true,
+      render: (room) => room.branch_id,
+    },
+    {
+      key: 'current_status',
+      label: 'Status',
+      sortable: true,
+      render: (room) => (
+        <StatusBadge
+          status={room.current_status || 'none'}
+          label={statusLabel(room.current_status)}
+        />
+      ),
+    },
+    {
+      key: 'status_time',
+      label: 'Last Updated',
+      sortable: true,
+      render: (room) => formatDateTime(room.status_time),
+    },
+    {
+      key: 'actions',
+      label: 'Actions',
+      align: 'right',
+      render: (room) => (
+        <div className="table-actions" style={{ justifyContent: 'flex-end' }}>
+          <button type="button" className="secondary-button" onClick={() => openUpdate(room)}>
+            Update
+          </button>
+          <button type="button" className="text-button" onClick={() => openHistory(room)}>
+            History
+          </button>
+        </div>
+      ),
+    },
+  ]
+
   return (
     <section className="content-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Room management</p>
-          <h2>Admin Room Status &amp; History</h2>
-        </div>
-        <label className="branch-filter">
-          <span>Branch</span>
-          <select value={branch} onChange={(event) => setBranch(event.target.value)}>
-            <option value="all">All branches</option>
+      <PageHeader
+        eyebrow="Work Track Operations"
+        title="Work Tracks & Room Status"
+        subtitle="Monitor live room readiness, cleaning progress, and status audit history by track."
+      />
+
+      <div className="wt-kpi-grid">
+        <StatCard label="Total Units" value={rooms.length} sublabel={`${branches.length} work tracks`} tone="primary" />
+        <StatCard label="Ready" value={readyCount} sublabel="Cleared for occupancy" tone="success" />
+        <StatCard label="Cleaning Active" value={cleaningCount} sublabel="In progress now" tone="warning" />
+        <StatCard label="Needs Attention" value={checkoutCount} sublabel="Checked out" tone="info" />
+      </div>
+
+      <div className="toolbar" style={{ marginBottom: 16 }}>
+        <label className="search-field">
+          <span className="sr-only">Search rooms</span>
+          <input
+            type="search"
+            placeholder="Search room or work track..."
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </label>
+        <div className="toolbar-actions">
+          <select aria-label="Work track filter" value={branch} onChange={(event) => setBranch(event.target.value)}>
+            <option value="all">All Work Tracks</option>
             {branches.map((item) => (
               <option key={item.branch_id} value={item.branch_id}>{item.branch_id}</option>
             ))}
           </select>
-        </label>
+          <select aria-label="Status filter" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+            <option value="all">All Statuses</option>
+            {STATUSES.map(([val, lbl]) => (
+              <option key={val} value={val}>{lbl}</option>
+            ))}
+            <option value="none">No Status</option>
+          </select>
+        </div>
       </div>
 
       {loading ? (
-        <div className="page-state-inline">Loading rooms...</div>
+        <div className="page-state-inline">Loading work tracks...</div>
       ) : error ? (
-        <div className="empty-state error" role="alert">
-          <p>{error}</p>
-          <button type="button" className="secondary-button" onClick={loadRooms}>Retry</button>
-        </div>
-      ) : visibleRooms.length === 0 ? (
-        <div className="empty-state">
-          <p>No rooms match this branch.</p>
-        </div>
+        <EmptyState
+          tone="error"
+          title="Could not load work tracks"
+          description={error}
+          action={<button type="button" className="secondary-button" onClick={loadRooms}>Retry</button>}
+        />
       ) : (
-        <div className="room-table-wrap">
-          <table className="room-table">
-            <thead>
-              <tr>
-                <th>Room ID</th>
-                <th>Branch</th>
-                <th>Status</th>
-                <th>Status date/time</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {roomPagination.visible(visibleRooms).map((room) => (
-                <tr key={room.room_id}>
-                  <td data-label="Room ID"><strong>{room.room_id}</strong></td>
-                  <td data-label="Branch">{room.branch_id}</td>
-                  <td data-label="Status">
-                    <span className={`status-badge status-${room.current_status || 'none'}`}>
-                      {statusLabel(room.current_status)}
-                    </span>
-                  </td>
-                  <td data-label="Status date/time">
-                    {formatDateTime(room.status_time)}
-                  </td>
-                  <td data-label="Actions" className="table-actions">
-                    <button type="button" className="secondary-button" onClick={() => openUpdate(room)}>Update</button>
-                    <button type="button" className="text-button" onClick={() => openHistory(room)}>History</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <>
+          <DataTable
+            columns={columns}
+            rows={roomPagination.visible(visibleRooms)}
+            rowKey={(room) => `${room.branch_id}:${room.room_id}`}
+            sortBy={sortBy}
+            sortDir={sortDir}
+            onSort={handleSort}
+            emptyTitle="No rooms match your filters"
+            emptyDescription="Try clearing the search query or selecting All Work Tracks."
+          />
           <LoadMoreButton
             remaining={roomPagination.remaining}
             onClick={roomPagination.showMore}
           />
-        </div>
+        </>
       )}
 
       {selectedRoom && (
@@ -236,7 +348,7 @@ export default function RoomStatusPage() {
           <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="update-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-heading">
               <div>
-                <p className="eyebrow">Room {selectedRoom.room_id}</p>
+                <p className="eyebrow">{selectedRoom.branch_id} · Room {selectedRoom.room_id}</p>
                 <h2 id="update-title">Update status</h2>
               </div>
               <button type="button" className="icon-button" aria-label="Close" onClick={() => setSelectedRoom(null)}>×</button>
@@ -270,7 +382,7 @@ export default function RoomStatusPage() {
           <section className="modal-sheet history-sheet" role="dialog" aria-modal="true" aria-labelledby="history-title" onMouseDown={(event) => event.stopPropagation()}>
             <div className="modal-heading">
               <div>
-                <p className="eyebrow">Room {historyRoom.room_id}</p>
+                <p className="eyebrow">{historyRoom.branch_id} · Room {historyRoom.room_id}</p>
                 <h2 id="history-title">Status history</h2>
               </div>
               <button type="button" className="icon-button" aria-label="Close" onClick={() => setHistoryRoom(null)}>×</button>
@@ -278,12 +390,14 @@ export default function RoomStatusPage() {
             {historyLoading ? (
               <div className="page-state-inline">Loading history...</div>
             ) : historyError ? (
-              <div className="empty-state error" role="alert">
-                <p>{historyError}</p>
-                <button type="button" className="secondary-button" onClick={() => openHistory(historyRoom)}>Retry</button>
-              </div>
+              <EmptyState
+                tone="error"
+                title="Could not load history"
+                description={historyError}
+                action={<button type="button" className="secondary-button" onClick={() => openHistory(historyRoom)}>Retry</button>}
+              />
             ) : history.length === 0 ? (
-              <div className="empty-state"><p>No status history yet.</p></div>
+              <EmptyState compact title="No status history yet." />
             ) : (
               <ol className="history-list">
                 {history.map((entry) => (

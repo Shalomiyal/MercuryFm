@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { db } from '../lib/db'
-import { useDataRefresh } from '../contexts/DataRefreshContext'
-import { useConfirm } from '../components/ui/ConfirmProvider'
+import { db } from '../../lib/db'
+import { useDataRefresh } from '../../contexts/DataRefreshContext'
+import { useConfirm } from '../ui/ConfirmProvider'
 import {
   downloadTaskWorkbook,
   parseTaskWorkbook,
-} from '../lib/excel'
+} from '../../lib/excel'
 
 const NEW_TASK_SELECT =
   'id, name, description, template_tasks(id, task_name, start_by, finish_by, sort_order, task_fields(id, field_name, default_value, sort_order))'
@@ -31,7 +31,7 @@ function sortedTasks(template) {
   )
 }
 
-export default function TemplatesPage() {
+export default function TemplatesManager({ embedded = false, onTemplatesChanged }) {
   const { revision } = useDataRefresh()
   const confirm = useConfirm()
   const [templates, setTemplates] = useState([])
@@ -254,74 +254,72 @@ export default function TemplatesPage() {
     if (validationError) return
 
     setSaving(true)
-    let orgDb
     try {
-      orgDb = await db()
-    } catch (tenantError) {
-      setFormError(tenantError.message)
-      setSaving(false)
-      return
-    }
+      const orgDb = await db()
+      let templateId = draft.id
+      if (templateId) {
+        const { error: updateError } = await orgDb
+          .from('task_templates')
+          .update({ name: draft.name.trim(), description: draft.description.trim() || null })
+          .eq('id', templateId)
+        if (updateError) throw updateError
 
-    let templateId = draft.id
-    if (templateId) {
-      const { error: updateError } = await orgDb
-        .from('task_templates')
-        .update({ name: draft.name.trim(), description: draft.description.trim() || null })
-        .eq('id', templateId)
-      if (updateError) throw updateError
-
-      const { error: deleteError } = await orgDb
-        .from('template_tasks')
-        .delete()
-        .eq('template_id', templateId)
-      if (deleteError) throw deleteError
-    } else {
-      const { data, error: insertError } = await orgDb
-        .from('task_templates')
-        .insert({ name: draft.name.trim(), description: draft.description.trim() || null })
-        .select('id')
-        .single()
-      if (insertError) throw insertError
-      templateId = data.id
-    }
-
-    const taskRows = draft.tasks.map((task, index) => ({
-      template_id: templateId,
-      task_name: task.task_name.trim(),
-      finish_by: task.finish_by,
-      sort_order: index,
-      ...(schemaReady ? { start_by: task.start_by || null } : {}),
-    }))
-    const { data: insertedTasks, error: taskError } = await orgDb
-      .from('template_tasks')
-      .insert(taskRows)
-      .select('id, sort_order')
-    if (taskError) throw taskError
-
-    if (schemaReady) {
-      const fieldRows = (insertedTasks || []).flatMap((inserted) => {
-        const source = draft.tasks.find((_, index) => index === inserted.sort_order)
-        if (!source) return []
-        return source.fields
-          .filter((field) => field.field_name.trim())
-          .map((field, fieldIndex) => ({
-            task_id: inserted.id,
-            field_name: field.field_name.trim(),
-            default_value: field.default_value.trim() || null,
-            sort_order: fieldIndex,
-          }))
-      })
-      if (fieldRows.length) {
-        const { error: fieldError } = await orgDb.from('task_fields').insert(fieldRows)
-        if (fieldError) throw fieldError
+        const { error: deleteError } = await orgDb
+          .from('template_tasks')
+          .delete()
+          .eq('template_id', templateId)
+        if (deleteError) throw deleteError
+      } else {
+        const { data, error: insertError } = await orgDb
+          .from('task_templates')
+          .insert({ name: draft.name.trim(), description: draft.description.trim() || null })
+          .select('id')
+          .single()
+        if (insertError) throw insertError
+        templateId = data.id
       }
-    }
 
-    setSaving(false)
-    setDraft(null)
-    setImportInfo(null)
-    await loadTemplates()
+      const taskRows = draft.tasks.map((task, index) => ({
+        template_id: templateId,
+        task_name: task.task_name.trim(),
+        finish_by: task.finish_by,
+        sort_order: index,
+        ...(schemaReady ? { start_by: task.start_by || null } : {}),
+      }))
+      const { data: insertedTasks, error: taskError } = await orgDb
+        .from('template_tasks')
+        .insert(taskRows)
+        .select('id, sort_order')
+      if (taskError) throw taskError
+
+      if (schemaReady) {
+        const fieldRows = (insertedTasks || []).flatMap((inserted) => {
+          const source = draft.tasks.find((_, index) => index === inserted.sort_order)
+          if (!source) return []
+          return source.fields
+            .filter((field) => field.field_name.trim())
+            .map((field, fieldIndex) => ({
+              task_id: inserted.id,
+              field_name: field.field_name.trim(),
+              default_value: field.default_value.trim() || null,
+              sort_order: fieldIndex,
+            }))
+        })
+        if (fieldRows.length) {
+          const { error: fieldError } = await orgDb.from('task_fields').insert(fieldRows)
+          if (fieldError) throw fieldError
+        }
+      }
+
+      setDraft(null)
+      setImportInfo(null)
+      await loadTemplates()
+      await onTemplatesChanged?.()
+    } catch (saveError) {
+      setFormError(saveError?.message || 'Unable to save template.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   async function deleteTemplate(template) {
@@ -331,21 +329,31 @@ export default function TemplatesPage() {
     })
     if (!accepted) return
     setError('')
-    const orgDb = await db()
-    const { error: deleteError } = await orgDb
-      .from('task_templates')
-      .delete()
-      .eq('id', template.id)
-    if (deleteError) setError(deleteError.message)
-    else await loadTemplates()
+    try {
+      const orgDb = await db()
+      const { error: deleteError } = await orgDb
+        .from('task_templates')
+        .delete()
+        .eq('id', template.id)
+      if (deleteError) setError(deleteError.message)
+      else {
+        await loadTemplates()
+        await onTemplatesChanged?.()
+      }
+    } catch (deleteErr) {
+      setError(deleteErr?.message || 'Unable to delete template.')
+    }
   }
 
+  const Wrapper = embedded ? 'div' : 'section'
+  const wrapperClass = embedded ? 'templates-manager' : 'content-page'
+
   return (
-    <section className="content-page">
-      <div className="page-heading">
+    <Wrapper className={wrapperClass}>
+      <div className={embedded ? 'templates-manager-header' : 'page-heading'}>
         <div>
           <p className="eyebrow">Reusable task lists</p>
-          <h2>Templates</h2>
+          {embedded ? <h3>Templates</h3> : <h2>Templates</h2>}
           <p className="page-subtitle">Build a task list once, then assign it to cleaners by date.</p>
         </div>
         <div className="toolbar-actions">
@@ -595,6 +603,6 @@ export default function TemplatesPage() {
           </section>
         </div>
       )}
-    </section>
+    </Wrapper>
   )
 }

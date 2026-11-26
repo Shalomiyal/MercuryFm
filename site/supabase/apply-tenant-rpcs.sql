@@ -132,23 +132,23 @@ begin
 
     for pair in
       select * from (values
-        ('room_status_history', 'created_by'),
-        ('daily_assignments',   'cleaner_id'),
-        ('task_runs',           'cleaner_id'),
-        ('media',               'created_by')
-      ) as v(table_name, column_name)
+        ('room_status_history', 'created_by', 'public.profiles'),
+        ('daily_assignments',   'cleaner_id', org.schema_name || '.members'),
+        ('task_runs',           'cleaner_id', org.schema_name || '.members'),
+        ('media',               'created_by', 'public.profiles')
+      ) as v(table_name, column_name, ref_table)
     loop
       target := to_regclass(format('%I.%I', org.schema_name, pair.table_name));
       if target is null then
         continue;
       end if;
 
+      -- Drop any existing foreign key on these columns, regardless of target.
       for old_fk in
         select c.conname
           from pg_constraint c
          where c.conrelid = target
            and c.contype = 'f'
-           and c.confrelid = 'public.profiles'::regclass
            and exists (
              select 1
                from unnest(c.conkey) k(attnum)
@@ -166,10 +166,17 @@ begin
         select 1 from pg_constraint
         where conrelid = target and conname = new_name
       ) then
-        execute format(
-          'alter table %I.%I add constraint %I foreign key (%I) references %I.members(id)',
-          org.schema_name, pair.table_name, new_name, pair.column_name, org.schema_name
-        );
+        if pair.ref_table = 'public.profiles' then
+          execute format(
+            'alter table %I.%I add constraint %I foreign key (%I) references %s(id) on delete set null',
+            org.schema_name, pair.table_name, new_name, pair.column_name, pair.ref_table
+          );
+        else
+          execute format(
+            'alter table %I.%I add constraint %I foreign key (%I) references %s(id)',
+            org.schema_name, pair.table_name, new_name, pair.column_name, pair.ref_table
+          );
+        end if;
       end if;
     end loop;
   end loop;

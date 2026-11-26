@@ -1,8 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { db } from '../lib/db'
 import { supabase } from '../lib/supabase'
 import { useDataRefresh } from '../contexts/DataRefreshContext'
 import { useConfirm } from '../components/ui/ConfirmProvider'
+import DataTable from '../components/ui/DataTable'
+import PageHeader from '../components/ui/PageHeader'
+import StatusBadge from '../components/ui/StatusBadge'
+import TaskDetailsDrawer from '../components/ui/TaskDetailsDrawer'
+import TemplatesManager from '../components/tasks/TemplatesManager'
 
 function today() {
   return new Date().toISOString().slice(0, 10)
@@ -26,15 +32,19 @@ function sortTasks(tasks = []) {
 }
 
 function emptyDraft() {
-  return { task_name: '', start_by: '', finish_by: '', fields: [] }
+  return { task_name: '', start_by: '', finish_by: '', branch_id: '', room_id: '', fields: [] }
 }
 
 export default function DailyTasksPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeView = searchParams.get('view') === 'templates' ? 'templates' : 'assign'
   const { revision } = useDataRefresh()
   const confirm = useConfirm()
   const [assignments, setAssignments] = useState([])
   const [templates, setTemplates] = useState([])
   const [cleaners, setCleaners] = useState([])
+  const [branches, setBranches] = useState([])
+  const [rooms, setRooms] = useState([])
   const [tasks, setTasks] = useState([])
   const [selectedAssignment, setSelectedAssignment] = useState(null)
   const [workDate, setWorkDate] = useState(today())
@@ -44,7 +54,17 @@ export default function DailyTasksPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const cleanerById = useMemo(
+    () => Object.fromEntries((cleaners || []).map((c) => [c.id, c.full_name])),
+    [cleaners],
+  )
+  const templateById = useMemo(
+    () => Object.fromEntries((templates || []).map((t) => [String(t.id), t.name])),
+    [templates],
+  )
   const [taskDraft, setTaskDraft] = useState(null)
+  const [drawerTask, setDrawerTask] = useState(null)
+  const [taskViewMode, setTaskViewMode] = useState('cards')
   const [formError, setFormError] = useState('')
   const [schemaReady, setSchemaReady] = useState(true)
 
@@ -52,8 +72,8 @@ export default function DailyTasksPage() {
     const term = assignmentSearch.trim().toLowerCase()
     if (!term) return assignments
     return assignments.filter((assignment) =>
-      String(assignment.members?.full_name || '').toLowerCase().includes(term) ||
-      String(assignment.task_templates?.name || '').toLowerCase().includes(term),
+      String(cleanerById[assignment.cleaner_id] || '').toLowerCase().includes(term) ||
+      String(templateById[String(assignment.template_id)] || '').toLowerCase().includes(term),
     )
   }, [assignments, assignmentSearch])
 
@@ -68,15 +88,21 @@ export default function DailyTasksPage() {
       setLoading(false)
       return
     }
-    const [templateResult, cleanerResult, assignmentResult] = await Promise.all([
+    const [templateResult, cleanerResult, assignmentResult, branchResult, roomResult] = await Promise.all([
       orgDb.from('task_templates').select('id, name').order('name'),
       orgDb.from('members').select('id, full_name').eq('role', 'cleaner').eq('is_active', true).order('full_name'),
-      orgDb
-        .from('daily_assignments')
-        .select('id, work_date, template_id, cleaner_id, members(full_name), task_templates(name)')
-        .eq('work_date', workDate)
-        .order('id'),
+      workDate
+        ? orgDb
+            .from('daily_assignments')
+            .select('id, work_date, template_id, cleaner_id')
+            .eq('work_date', workDate)
+            .order('id')
+        : Promise.resolve({ data: [], error: null }),
+      orgDb.from('branches').select('branch_id').order('branch_id'),
+      orgDb.from('rooms').select('room_id, branch_id').order('branch_id').order('room_id'),
     ])
+    if (!branchResult.error) setBranches(branchResult.data || [])
+    if (!roomResult.error) setRooms(roomResult.data || [])
     if (templateResult.error || cleanerResult.error || assignmentResult.error) {
       setError(
         templateResult.error?.message ||
@@ -105,7 +131,7 @@ export default function DailyTasksPage() {
     const orgDb = await db()
     let result = await orgDb
       .from('daily_tasks')
-      .select('id, task_name, start_by, finish_by, daily_task_field_values(id, field_name, field_value, sort_order)')
+      .select('id, task_name, start_by, finish_by, branch_id, room_id, daily_task_field_values(id, field_name, field_value, sort_order), task_runs(state)')
       .eq('assignment_id', assignment.id)
       .order('start_by', { ascending: true, nullsFirst: false })
       .order('finish_by')
@@ -126,10 +152,18 @@ export default function DailyTasksPage() {
     }
     setTasks(
       sortTasks(
-        (result.data || []).map((task) => ({
-          ...task,
-          fields: sortFields(task.daily_task_field_values || []),
-        })),
+        (result.data || []).map((task) => {
+          const runs = Array.isArray(task.task_runs)
+            ? task.task_runs
+            : task.task_runs
+              ? [task.task_runs]
+              : []
+          return {
+            ...task,
+            isCompleted: runs.some((run) => run.state === 'completed'),
+            fields: sortFields(task.daily_task_field_values || []),
+          }
+        }),
       ),
     )
   }
@@ -275,7 +309,7 @@ export default function DailyTasksPage() {
   }
 
   async function saveFields(orgDb, dailyTaskId) {
-    if (!schemaReady) return null
+    if (!schemaReady || taskDraft?.isCompleted) return null
     const { error: deleteError } = await orgDb
       .from('daily_task_field_values')
       .delete()
@@ -331,6 +365,8 @@ export default function DailyTasksPage() {
       task_name: taskDraft.task_name.trim(),
       finish_by: taskDraft.finish_by,
       ...(schemaReady ? { start_by: taskDraft.start_by || null } : {}),
+      branch_id: taskDraft.branch_id || null,
+      room_id: taskDraft.room_id || null,
     }
 
     let dailyTaskId = taskDraft.id
@@ -370,16 +406,47 @@ export default function DailyTasksPage() {
     else await openTasks(selectedAssignment)
   }
 
+  function setView(nextView) {
+    if (nextView === 'templates') {
+      setSearchParams({ view: 'templates' })
+    } else {
+      setSearchParams({})
+    }
+  }
+
   return (
     <section className="content-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Assignments</p>
-          <h2>Daily tasks</h2>
-          <p className="page-subtitle">Assign a template to a cleaner, then fine-tune that day's tasks.</p>
-        </div>
+      <PageHeader
+        eyebrow="Operations"
+        title="Daily Tasks & Templates"
+        subtitle="Assign reusable templates to staff by date, then inspect or fine-tune each day's tasks."
+      />
+
+      <div className="segmented-tabs" role="tablist" aria-label="Daily tasks views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeView === 'assign'}
+          className={`segmented-tab ${activeView === 'assign' ? 'active' : ''}`}
+          onClick={() => setView('assign')}
+        >
+          Assign tasks
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeView === 'templates'}
+          className={`segmented-tab ${activeView === 'templates' ? 'active' : ''}`}
+          onClick={() => setView('templates')}
+        >
+          Templates
+        </button>
       </div>
 
+      {activeView === 'templates' ? (
+        <TemplatesManager embedded onTemplatesChanged={loadLookups} />
+      ) : (
+        <>
       {!schemaReady && (
         <div className="notice warning" role="status">
           Run <code>supabase/task-fields-and-start-times.sql</code> in the Supabase SQL Editor to
@@ -406,15 +473,36 @@ export default function DailyTasksPage() {
               <span className="field-label">Work date</span>
               <input id="work-date" type="date" value={workDate} onChange={(event) => setWorkDate(event.target.value)} />
             </label>
-            <label>
-              <span className="field-label">Template</span>
+            <div className="field-block">
+              <div className="field-label-row">
+                <label className="field-label" htmlFor="template-select">Template</label>
+                <button
+                  type="button"
+                  className="text-button inline-action"
+                  onClick={() => setView('templates')}
+                >
+                  Manage templates
+                </button>
+              </div>
               <select id="template-select" value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
                 <option value="">Select template</option>
                 {templates.map((template) => (
                   <option key={template.id} value={template.id}>{template.name}</option>
                 ))}
               </select>
-            </label>
+              {!loading && templates.length === 0 && (
+                <p className="field-hint">
+                  No templates yet?{' '}
+                  <button
+                    type="button"
+                    className="text-button inline-action"
+                    onClick={() => setView('templates')}
+                  >
+                    Create one
+                  </button>
+                </p>
+              )}
+            </div>
             <label>
               <span className="field-label">Cleaning staff</span>
               <select id="cleaner-select" value={cleanerId} onChange={(event) => setCleanerId(event.target.value)}>
@@ -460,8 +548,8 @@ export default function DailyTasksPage() {
                 key={assignment.id}
                 onClick={() => openTasks(assignment)}
               >
-                <strong>{assignment.members?.full_name || 'Cleaner'}</strong>
-                <span>{assignment.task_templates?.name || 'Daily assignment'}</span>
+                <strong>{cleanerById[assignment.cleaner_id] || 'Cleaner'}</strong>
+                <span>{templateById[String(assignment.template_id)] || 'Daily assignment'}</span>
               </button>
             ))}
           </div>
@@ -473,11 +561,31 @@ export default function DailyTasksPage() {
               <div className="panel-heading">
                 <div>
                   <p className="eyebrow">{workDate} · Step 3</p>
-                  <h3>{selectedAssignment.members?.full_name || 'Cleaner'}</h3>
-                  <p className="field-hint">{selectedAssignment.task_templates?.name || 'Daily assignment'}</p>
+                  <h3>{cleanerById[selectedAssignment.cleaner_id] || 'Cleaner'}</h3>
+                  <p className="field-hint">{templateById[String(selectedAssignment.template_id)] || 'Daily assignment'}</p>
                 </div>
                 <div className="toolbar-actions">
-                  <span className="count-badge">{tasks.length} tasks</span>
+                  <div className="wt-theme-switch" role="group" aria-label="Task display mode">
+                    <button
+                      type="button"
+                      className={`wt-theme-btn ${taskViewMode === 'cards' ? 'active' : ''}`}
+                      style={{ width: 'auto', padding: '0 10px', fontSize: '12px', fontWeight: 600 }}
+                      onClick={() => setTaskViewMode('cards')}
+                    >
+                      Cards
+                    </button>
+                    <button
+                      type="button"
+                      className={`wt-theme-btn ${taskViewMode === 'table' ? 'active' : ''}`}
+                      style={{ width: 'auto', padding: '0 10px', fontSize: '12px', fontWeight: 600 }}
+                      onClick={() => setTaskViewMode('table')}
+                    >
+                      Table
+                    </button>
+                  </div>
+                  <span className="count-badge">
+                    {tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}
+                  </span>
                   <button type="button" className="primary-button page-button" onClick={() => openTaskDraft()}>
                     Add task
                   </button>
@@ -485,6 +593,59 @@ export default function DailyTasksPage() {
               </div>
               {tasks.length === 0 ? (
                 <div className="empty-state"><p>No daily tasks for this assignment yet.</p></div>
+              ) : taskViewMode === 'table' ? (
+                <DataTable
+                  rows={tasks}
+                  onRowClick={(task) => setDrawerTask(task)}
+                  columns={[
+                    {
+                      key: 'task_name',
+                      label: 'Task',
+                      render: (task) => (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                          <strong>{task.task_name}</strong>
+                          {task.isCompleted && <StatusBadge status="completed" label="Completed" />}
+                        </div>
+                      ),
+                    },
+                    {
+                      key: 'branch_id',
+                      label: 'Work Track',
+                      render: (task) => task.branch_id || 'All',
+                    },
+                    {
+                      key: 'room_id',
+                      label: 'Location / Unit',
+                      render: (task) => task.room_id || '—',
+                    },
+                    {
+                      key: 'start_by',
+                      label: 'Window',
+                      render: (task) =>
+                        task.start_by ? `${task.start_by} – ${task.finish_by}` : `By ${task.finish_by}`,
+                    },
+                    {
+                      key: 'actions',
+                      label: 'Actions',
+                      align: 'right',
+                      render: (task) => (
+                        <div className="card-actions" style={{ justifyContent: 'flex-end' }} onClick={(e) => e.stopPropagation()}>
+                          <button type="button" className="text-button" onClick={() => setDrawerTask(task)}>Details</button>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={task.isCompleted}
+                            title={task.isCompleted ? 'Completed by staff' : undefined}
+                            onClick={() => openTaskDraft(task)}
+                          >
+                            Edit
+                          </button>
+                          <button type="button" className="text-button danger" onClick={() => removeTask(task)}>Remove</button>
+                        </div>
+                      ),
+                    },
+                  ]}
+                />
               ) : (
                 <div className="daily-task-list">
                   {tasks.map((task) => (
@@ -493,6 +654,8 @@ export default function DailyTasksPage() {
                         <div className="daily-task-title">
                           <strong>{task.task_name}</strong>
                           <div className="time-chip-group">
+                            {task.isCompleted && <StatusBadge status="completed" label="Completed" />}
+                            {task.branch_id && <span className="time-chip">{task.branch_id}{task.room_id ? ` · ${task.room_id}` : ''}</span>}
                             {schemaReady && task.start_by && <span className="time-chip start">Starts {task.start_by}</span>}
                             <span className="time-chip">Finish {task.finish_by}</span>
                           </div>
@@ -509,7 +672,16 @@ export default function DailyTasksPage() {
                         )}
                       </div>
                       <div className="card-actions">
-                        <button type="button" className="secondary-button" onClick={() => openTaskDraft(task)}>Edit</button>
+                        <button type="button" className="text-button" onClick={() => setDrawerTask(task)}>Details</button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={task.isCompleted}
+                          title={task.isCompleted ? 'Completed by staff' : undefined}
+                          onClick={() => openTaskDraft(task)}
+                        >
+                          Edit
+                        </button>
                         <button type="button" className="text-button danger" onClick={() => removeTask(task)}>Remove</button>
                       </div>
                     </article>
@@ -559,12 +731,68 @@ export default function DailyTasksPage() {
                 </label>
               </div>
 
+              {(branches.length > 0 || rooms.length > 0) && (
+                <div className="field-grid two">
+                  <label>
+                    <span className="field-label">Work Track <small className="optional-label">(optional)</small></span>
+                    <select
+                      value={taskDraft.branch_id || ''}
+                      onChange={(event) =>
+                        setTaskDraft((current) => ({
+                          ...current,
+                          branch_id: event.target.value,
+                          room_id: '',
+                        }))
+                      }
+                    >
+                      <option value="">All Work Tracks</option>
+                      {branches.map((b) => (
+                        <option key={b.branch_id} value={b.branch_id}>{b.branch_id}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="field-label">Location / Unit <small className="optional-label">(optional)</small></span>
+                    <select
+                      value={taskDraft.room_id || ''}
+                      onChange={(event) => {
+                        const roomVal = event.target.value
+                        const matched = rooms.find(
+                          (r) => r.room_id === roomVal && (!taskDraft.branch_id || r.branch_id === taskDraft.branch_id),
+                        )
+                        setTaskDraft((current) => ({
+                          ...current,
+                          room_id: roomVal,
+                          branch_id: current.branch_id || matched?.branch_id || '',
+                        }))
+                      }}
+                    >
+                      <option value="">Any location / unit</option>
+                      {rooms
+                        .filter((r) => !taskDraft.branch_id || r.branch_id === taskDraft.branch_id)
+                        .map((r) => (
+                          <option key={`${r.branch_id}:${r.room_id}`} value={r.room_id}>
+                            {r.room_id} ({r.branch_id})
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+
               {schemaReady && (
                 <div className="task-custom-fields">
                   <div className="field-list-heading">
                     <span className="field-label">Custom field values</span>
-                    <button type="button" className="text-button" onClick={addField}>+ Add field</button>
+                    {!taskDraft.isCompleted && (
+                      <button type="button" className="text-button" onClick={addField}>+ Add field</button>
+                    )}
                   </div>
+                  {taskDraft.isCompleted && (
+                    <p className="field-hint">
+                      Completed by staff — recorded custom field values are locked and read-only.
+                    </p>
+                  )}
                   {taskDraft.fields.length === 0 ? (
                     <p className="field-hint">No extra fields for this task. Add one if you need to record more detail.</p>
                   ) : (
@@ -575,15 +803,21 @@ export default function DailyTasksPage() {
                             aria-label={`Field ${index + 1} name`}
                             placeholder="Field name"
                             value={field.field_name}
+                            disabled={Boolean(taskDraft.isCompleted)}
+                            readOnly={Boolean(taskDraft.isCompleted)}
                             onChange={(event) => updateField(index, 'field_name', event.target.value)}
                           />
                           <input
                             aria-label={`Value for ${field.field_name || `field ${index + 1}`}`}
                             placeholder="Value"
                             value={field.field_value || ''}
+                            disabled={Boolean(taskDraft.isCompleted)}
+                            readOnly={Boolean(taskDraft.isCompleted)}
                             onChange={(event) => updateField(index, 'field_value', event.target.value)}
                           />
-                          <button type="button" className="text-button danger" onClick={() => removeField(index)}>Remove</button>
+                          {!taskDraft.isCompleted && (
+                            <button type="button" className="text-button danger" onClick={() => removeField(index)}>Remove</button>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -602,6 +836,17 @@ export default function DailyTasksPage() {
           </section>
         </div>
       )}
+        </>
+      )}
+      <TaskDetailsDrawer
+        open={Boolean(drawerTask)}
+        onClose={() => setDrawerTask(null)}
+        task={drawerTask}
+        cleanerName={selectedAssignment ? cleanerById[selectedAssignment.cleaner_id] : ''}
+        templateName={selectedAssignment ? templateById[String(selectedAssignment.template_id)] : ''}
+        workDate={workDate}
+        onEdit={drawerTask && !drawerTask.isCompleted ? (task) => openTaskDraft(task) : undefined}
+      />
     </section>
   )
 }

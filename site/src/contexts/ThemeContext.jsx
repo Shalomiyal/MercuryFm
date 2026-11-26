@@ -7,36 +7,71 @@ import {
   useState,
 } from 'react'
 
-const STORAGE_KEY = 'mercuryfm:theme'
+const STORAGE_KEY = 'worktrack:theme'
+const LEGACY_KEY = 'mercuryfm:theme'
 const ThemeContext = createContext(null)
 
-function initialTheme() {
+function initialMode() {
   try {
-    const stored = window.localStorage.getItem(STORAGE_KEY)
-    if (stored === 'light' || stored === 'dark') return stored
+    const stored =
+      window.localStorage.getItem(STORAGE_KEY) ||
+      window.localStorage.getItem(LEGACY_KEY)
+    if (stored === 'light' || stored === 'dark' || stored === 'system') {
+      return stored
+    }
   } catch {
     /* storage may be disabled */
   }
+  return 'system'
+}
+
+function getSystemTheme() {
+  if (typeof window === 'undefined') return 'light'
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
 export function ThemeProvider({ children }) {
-  const [theme, setTheme] = useState(initialTheme)
+  const [themeMode, setThemeModeState] = useState(initialMode)
+  const [systemTheme, setSystemTheme] = useState(getSystemTheme)
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)')
+    if (!media) return undefined
+    const handleChange = (event) => {
+      setSystemTheme(event.matches ? 'dark' : 'light')
+    }
+    media.addEventListener?.('change', handleChange)
+    return () => media.removeEventListener?.('change', handleChange)
+  }, [])
+
+  const theme = themeMode === 'system' ? systemTheme : themeMode
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
     try {
-      window.localStorage.setItem(STORAGE_KEY, theme)
+      window.localStorage.setItem(STORAGE_KEY, themeMode)
     } catch {
       /* storage may be disabled */
     }
-  }, [theme])
+  }, [theme, themeMode])
 
-  const toggleTheme = useCallback(() => {
-    setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
+  const setThemeMode = useCallback((nextMode) => {
+    if (nextMode === 'light' || nextMode === 'dark' || nextMode === 'system') {
+      setThemeModeState(nextMode)
+    }
   }, [])
 
-  const value = useMemo(() => ({ theme, toggleTheme }), [theme, toggleTheme])
+  const toggleTheme = useCallback(() => {
+    setThemeModeState((current) => {
+      const resolved = current === 'system' ? getSystemTheme() : current
+      return resolved === 'dark' ? 'light' : 'dark'
+    })
+  }, [])
+
+  const value = useMemo(
+    () => ({ theme, themeMode, setThemeMode, toggleTheme }),
+    [theme, themeMode, setThemeMode, toggleTheme],
+  )
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }
 

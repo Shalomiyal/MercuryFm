@@ -4,14 +4,20 @@ import {
   MAX_VIDEO_SECONDS,
   MAX_VIDEO_BYTES,
   compressPhoto,
+  generatePhotoThumbnail,
+  generateVideoPoster,
+  getImageDimensions,
   getVideoDuration,
   getVideoResolution,
-  uploadDatabaseMedia,
+  uploadWorkMedia,
   validateVideo,
 } from '../lib/media'
 import { db } from '../lib/db'
+import { useAuth } from '../contexts/AuthContext'
 import { useDataRefresh } from '../contexts/DataRefreshContext'
 import { usePagination } from '../hooks/usePagination'
+import CameraCapture from '../components/ui/CameraCapture'
+import CleanerMediaPreview from '../components/ui/CleanerMediaPreview'
 import LoadMoreButton from '../components/ui/LoadMoreButton'
 import { formatTime, friendlyError } from '../lib/format'
 
@@ -19,26 +25,55 @@ function today() {
   return new Date().toISOString().slice(0, 10)
 }
 
+function taskRunOf(task) {
+  if (!task?.task_runs) return undefined
+  return Array.isArray(task.task_runs) ? task.task_runs[0] : task.task_runs
+}
+
 function taskState(task) {
-  const run = task.task_runs?.[0]
+  const run = taskRunOf(task)
   if (!run) return 'not_started'
   return run.state === 'completed' ? 'completed' : 'in_progress'
 }
 
 function isSchemaError(error) {
   const message = String(error?.message || '').toLowerCase()
-  return message.includes('start_by') || message.includes('daily_task_field_values')
+  return (
+    message.includes('start_by') ||
+    message.includes('daily_task_field_values') ||
+    message.includes('branch_id') ||
+    message.includes('room_id')
+  )
 }
 
 export default function CleanerTasksPage() {
+  const { schemaName } = useAuth()
   const { revision } = useDataRefresh()
   const [tasks, setTasks] = useState([])
+  const [branches, setBranches] = useState([])
+  const [rooms, setRooms] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [filter, setFilter] = useState('all')
   const [selectedTask, setSelectedTask] = useState(null)
   const [action, setAction] = useState(null)
+  const [actionFieldDrafts, setActionFieldDrafts] = useState([])
   const [mediaFile, setMediaFile] = useState(null)
+  const [previewUrl, setPreviewUrl] = useState('')
+  const [thumbFile, setThumbFile] = useState(null)
+
+  useEffect(() => {
+    if (!mediaFile) {
+      setPreviewUrl('')
+      return undefined
+    }
+    const url = URL.createObjectURL(mediaFile)
+    setPreviewUrl(url)
+    return () => URL.revokeObjectURL(url)
+  }, [mediaFile])
+  const [mediaMeta, setMediaMeta] = useState({ durationSeconds: null, width: null, height: null })
+  const [selectedBranchId, setSelectedBranchId] = useState('')
+  const [selectedRoomId, setSelectedRoomId] = useState('')
   const [progress, setProgress] = useState(0)
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState('')
@@ -65,9 +100,16 @@ export default function CleanerTasksPage() {
       setLoading(false)
       return
     }
+    const [branchResult, roomResult] = await Promise.all([
+      orgDb.from('branches').select('branch_id').order('branch_id'),
+      orgDb.from('rooms').select('room_id, branch_id').order('branch_id').order('room_id'),
+    ])
+    if (!branchResult.error) setBranches(branchResult.data || [])
+    if (!roomResult.error) setRooms(roomResult.data || [])
+
     let result = await orgDb
       .from('daily_assignments')
-      .select('id, work_date, daily_tasks(id, task_name, start_by, finish_by, daily_task_field_values(id, field_name, field_value, sort_order), task_runs(id, run_date, cleaner_id, started_at, start_photo_id, finished_at, finish_video_id, state))')
+      .select('id, work_date, daily_tasks(id, task_name, start_by, finish_by, branch_id, room_id, daily_task_field_values(id, field_name, field_value, sort_order), task_runs(id, run_date, cleaner_id, branch_id, room_id, started_at, start_photo_id, finished_at, finish_video_id, state, start_photo:media!start_photo_id(storage_path, thumb_path), finish_video:media!finish_video_id(storage_path, thumb_path))))')
       .eq('cleaner_id', cleanerId)
       .eq('work_date', today())
       .order('work_date')
@@ -87,6 +129,7 @@ export default function CleanerTasksPage() {
         (assignment.daily_tasks || []).map((task) => ({
           ...task,
           assignmentId: assignment.id,
+          workDate: assignment.work_date,
           fields: [...(task.daily_task_field_values || [])].sort(
             (left, right) => (left.sort_order || 0) - (right.sort_order || 0),
           ),
@@ -117,6 +160,11 @@ export default function CleanerTasksPage() {
     setSelectedTask(task)
     setAction(nextAction)
     setMediaFile(null)
+    setThumbFile(null)
+    setMediaMeta({ durationSeconds: null, width: null, height: null })
+    setSelectedBranchId(task.branch_id || '')
+    setSelectedRoomId(task.room_id || '')
+    setActionFieldDrafts((task.fields || []).map((field) => ({ ...field })))
     setProgress(0)
     setFormError('')
   }
@@ -156,22 +204,30 @@ export default function CleanerTasksPage() {
     }
   }
 
-  async function handleFile(file) {
+  async function handleFile(file, knownDurationSeconds = null) {
     setFormError('')
+    setThumbFile(null)
+    setMediaMeta({ durationSeconds: null, width: null, height: null })
     if (!file) return
     try {
       if (action === 'start') {
         if (!file.type.startsWith('image/')) {
-          setFormError('Choose an image photo.')
+          setFormError('Capture an image photo with your camera.')
           return
         }
         setSaving(true)
         const compressed = await compressPhoto(file)
+        const [dims, thumb] = await Promise.all([
+          getImageDimensions(compressed),
+          generatePhotoThumbnail(compressed),
+        ])
         setMediaFile(compressed)
+        setThumbFile(thumb)
+        setMediaMeta({ durationSeconds: null, width: dims.width, height: dims.height })
         setSaving(false)
       } else {
         if (!file.type.startsWith('video/')) {
-          setFormError('Choose a video file.')
+          setFormError('Record a video with your camera.')
           return
         }
         const limitError = validateVideo(file)
@@ -180,18 +236,38 @@ export default function CleanerTasksPage() {
           return
         }
         setSaving(true)
-        const duration = await getVideoDuration(file)
+        let duration = knownDurationSeconds
+        if (!duration || !Number.isFinite(duration)) {
+          try {
+            const probed = await getVideoDuration(file)
+            if (Number.isFinite(probed)) duration = probed
+          } catch {
+            duration = knownDurationSeconds
+          }
+        }
         const resolution = await getVideoResolution(file)
-        setSaving(false)
-        if (duration > MAX_VIDEO_SECONDS) {
+        if (duration && duration > MAX_VIDEO_SECONDS) {
+          setSaving(false)
           setFormError(`Video exceeds the ${MAX_VIDEO_SECONDS}-second limit.`)
           return
         }
-        if (resolution.width > 854 || resolution.height > 480) {
+        if (
+          Math.max(resolution.width, resolution.height) > 854 ||
+          Math.min(resolution.width, resolution.height) > 480
+        ) {
+          setSaving(false)
           setFormError('Video resolution must be 480p or lower.')
           return
         }
+        const poster = await generateVideoPoster(file)
         setMediaFile(file)
+        setThumbFile(poster)
+        setMediaMeta({
+          durationSeconds: duration,
+          width: resolution.width,
+          height: resolution.height,
+        })
+        setSaving(false)
       }
     } catch (validationError) {
       setSaving(false)
@@ -200,46 +276,56 @@ export default function CleanerTasksPage() {
   }
 
   async function saveAction(event) {
-    event.preventDefault()
+    if (event?.preventDefault) event.preventDefault()
+    if (saving) return
     if (!mediaFile) {
       setFormError(action === 'start' ? 'Upload a start photo.' : 'Upload a finish video.')
       return
     }
     setSaving(true)
     setFormError('')
+    setProgress(5)
     const { data: sessionData } = await supabase.auth.getSession()
-    const accessToken = sessionData.session?.access_token
-    if (!accessToken) {
+    const cleanerId = sessionData.session?.user.id
+    if (!cleanerId || !schemaName) {
       setFormError('Your session expired. Sign in again.')
       setSaving(false)
       return
     }
 
     try {
-      const uploaded = await uploadDatabaseMedia(
-        mediaFile,
-        action === 'start' ? 'photo' : 'video',
-        selectedTask.id,
-        accessToken,
-        setProgress,
-      )
+      const uploaded = await uploadWorkMedia({
+        file: mediaFile,
+        thumbFile,
+        kind: action === 'start' ? 'photo' : 'video',
+        stage: action === 'start' ? 'start' : 'finish',
+        schemaName,
+        cleanerId,
+        workDate: selectedTask.workDate || today(),
+        dailyTaskId: selectedTask.id,
+        durationSeconds: mediaMeta.durationSeconds,
+        width: mediaMeta.width,
+        height: mediaMeta.height,
+        onProgress: setProgress,
+      })
+
+      const orgDb = await db()
       if (action === 'start') {
-        const orgDb = await db()
-        const { error: insertError } = await orgDb
-          .from('task_runs')
-          .insert({
-            daily_task_id: selectedTask.id,
-            run_date: today(),
-            cleaner_id: sessionData.session.user.id,
-            started_at: new Date().toISOString(),
-            start_photo_id: uploaded.mediaId,
-            state: 'in_progress',
-          })
+        const insertPayload = {
+          daily_task_id: selectedTask.id,
+          run_date: today(),
+          cleaner_id: cleanerId,
+          started_at: new Date().toISOString(),
+          start_photo_id: uploaded.mediaId,
+          state: 'in_progress',
+          ...(selectedBranchId ? { branch_id: selectedBranchId } : {}),
+          ...(selectedRoomId ? { room_id: selectedRoomId } : {}),
+        }
+        const { error: insertError } = await orgDb.from('task_runs').insert(insertPayload)
         if (insertError) throw insertError
       } else {
-        const run = selectedTask.task_runs?.[0]
+        const run = taskRunOf(selectedTask)
         if (!run) throw new Error('Start this task before finishing it.')
-        const orgDb = await db()
         const { error: updateError } = await orgDb
           .from('task_runs')
           .update({
@@ -248,14 +334,24 @@ export default function CleanerTasksPage() {
             state: 'completed',
           })
           .eq('id', run.id)
-          .eq('cleaner_id', sessionData.session.user.id)
+          .eq('cleaner_id', cleanerId)
         if (updateError) throw updateError
+      }
+      if (action === 'finish') {
+        for (const field of actionFieldDrafts) {
+          if (!field.id) continue
+          const { error: fieldUpdateError } = await orgDb
+            .from('daily_task_field_values')
+            .update({ field_value: field.field_value || '' })
+            .eq('id', field.id)
+          if (fieldUpdateError) throw fieldUpdateError
+        }
       }
       setSelectedTask(null)
       setAction(null)
       await loadTasks()
     } catch (saveError) {
-      setFormError(saveError.message)
+      setFormError(friendlyError(saveError))
     } finally {
       setSaving(false)
     }
@@ -290,7 +386,7 @@ export default function CleanerTasksPage() {
         <div className="cleaner-task-grid">
           {taskPagination.visible(visibleTasks).map((task) => {
             const state = taskState(task)
-            const run = task.task_runs?.[0]
+            const run = taskRunOf(task)
             return (
               <article className="cleaner-task-card" key={task.id}>
                 <div className="cleaner-task-heading">
@@ -306,6 +402,30 @@ export default function CleanerTasksPage() {
                 </div>
                 {run?.started_at && <p className="task-meta">Started {formatTime(run.started_at)}</p>}
                 {run?.finished_at && <p className="task-meta">Finished {formatTime(run.finished_at)}</p>}
+                {(run?.start_photo_id || run?.finish_video_id) && (
+                  <div className="cleaner-media-grid">
+                    {run?.start_photo_id && (
+                      <CleanerMediaPreview
+                        mediaId={run.start_photo_id}
+                        storagePath={run.start_photo?.storage_path}
+                        thumbPath={run.start_photo?.thumb_path}
+                        kind="photo"
+                        label="Start photo"
+                        timestamp={run.started_at}
+                      />
+                    )}
+                    {run?.finish_video_id && (
+                      <CleanerMediaPreview
+                        mediaId={run.finish_video_id}
+                        storagePath={run.finish_video?.storage_path}
+                        thumbPath={run.finish_video?.thumb_path}
+                        kind="video"
+                        label="Finish video"
+                        timestamp={run.finished_at}
+                      />
+                    )}
+                  </div>
+                )}
                 {task.fields?.length > 0 && (
                   <div className="daily-task-fields compact-fields">
                     {task.fields.map((field) => (
@@ -324,9 +444,6 @@ export default function CleanerTasksPage() {
                     <button type="button" className="primary-button task-action" onClick={() => openAction(task, 'finish')}>Finish task</button>
                   )}
                   {state === 'completed' && <button type="button" className="secondary-button task-action" disabled>Completed</button>}
-                  {task.fields?.length > 0 && (
-                    <button type="button" className="secondary-button task-action" onClick={() => openDetails(task)}>Details</button>
-                  )}
                 </div>
               </article>
             )
@@ -349,17 +466,122 @@ export default function CleanerTasksPage() {
               <button type="button" className="icon-button" aria-label="Close" onClick={() => setSelectedTask(null)}>×</button>
             </div>
             <form className="status-form" onSubmit={saveAction} noValidate>
-              <label htmlFor="media-file">{action === 'start' ? 'Start photo' : 'Finish video'}</label>
-              <input
-                id="media-file"
-                type="file"
-                accept={action === 'start' ? 'image/*' : 'video/*'}
-                capture={action === 'start' ? 'environment' : undefined}
-                onChange={(event) => handleFile(event.target.files?.[0])}
-              />
-              {action === 'start' && <p className="upload-help">Photo is compressed on this device before upload.</p>}
-              {action === 'finish' && <p className="upload-help">Maximum {MAX_VIDEO_SECONDS} seconds, {MAX_VIDEO_BYTES / 1024 / 1024} MB, 480p.</p>}
-              {mediaFile && <p className="upload-ready">Selected: {mediaFile.name}</p>}
+              {action === 'start' && !selectedTask.room_id && (branches.length > 0 || rooms.length > 0) && (
+                <div className="field-grid two">
+                  <label>
+                    <span className="field-label">Work Track <small className="optional-label">(optional)</small></span>
+                    <select
+                      value={selectedBranchId}
+                      onChange={(e) => {
+                        setSelectedBranchId(e.target.value)
+                        setSelectedRoomId('')
+                      }}
+                    >
+                      <option value="">Select work track</option>
+                      {branches.map((b) => (
+                        <option key={b.branch_id} value={b.branch_id}>{b.branch_id}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span className="field-label">Location / Unit <small className="optional-label">(optional)</small></span>
+                    <select
+                      value={selectedRoomId}
+                      onChange={(e) => {
+                        const roomVal = e.target.value
+                        setSelectedRoomId(roomVal)
+                        const matched = rooms.find((r) => r.room_id === roomVal && (!selectedBranchId || r.branch_id === selectedBranchId))
+                        if (matched && !selectedBranchId) setSelectedBranchId(matched.branch_id)
+                      }}
+                    >
+                      <option value="">Select location / unit</option>
+                      {rooms
+                        .filter((r) => !selectedBranchId || r.branch_id === selectedBranchId)
+                        .map((r) => (
+                          <option key={`${r.branch_id}:${r.room_id}`} value={r.room_id}>
+                            {r.room_id} ({r.branch_id})
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+              <span className="field-label">
+                {action === 'start' ? 'Start photo (camera only)' : 'Finish video (camera only)'}
+              </span>
+              {!mediaFile ? (
+                <>
+                  <CameraCapture
+                    mode={action === 'start' ? 'photo' : 'video'}
+                    maxSeconds={MAX_VIDEO_SECONDS}
+                    stampLabel={[
+                      selectedTask.task_name,
+                      selectedRoomId || selectedTask.room_id ? `Room ${selectedRoomId || selectedTask.room_id}` : '',
+                      selectedBranchId || selectedTask.branch_id || '',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                    disabled={saving}
+                    onCapture={(capturedFile, secs) => handleFile(capturedFile, secs)}
+                  />
+                  {action === 'start' ? (
+                    <p className="upload-help">Take a live photo using your camera. Gallery uploads are disabled.</p>
+                  ) : (
+                    <p className="upload-help">
+                      Record a live video up to {MAX_VIDEO_SECONDS} seconds ({MAX_VIDEO_BYTES / 1024 / 1024} MB max). Gallery uploads are disabled.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="upload-preview-box">
+                  <div className="upload-preview-header">
+                    <span className="upload-ready">Captured and ready to submit</span>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={saving}
+                      onClick={() => {
+                        setMediaFile(null)
+                        setThumbFile(null)
+                        setMediaMeta({ durationSeconds: null, width: null, height: null })
+                        setFormError('')
+                      }}
+                    >
+                      Retake
+                    </button>
+                  </div>
+                  {previewUrl && (
+                    action === 'start' ? (
+                      <img src={previewUrl} alt="Captured start preview" className="cleaner-media-img" />
+                    ) : (
+                      <video src={previewUrl} controls playsInline preload="metadata" className="cleaner-media-video" />
+                    )
+                  )}
+                </div>
+              )}
+              {action === 'finish' && actionFieldDrafts.length > 0 && (
+                <div className="task-custom-fields">
+                  <span className="field-label">Task details</span>
+                  <div className="field-grid two">
+                    {actionFieldDrafts.map((field, index) => (
+                      <label key={field.id || `action-field-${index}`}>
+                        <span className="field-label">{field.field_name}</span>
+                        <input
+                          placeholder={`Enter ${field.field_name}`}
+                          value={field.field_value || ''}
+                          onChange={(event) =>
+                            setActionFieldDrafts((current) =>
+                              current.map((item, itemIndex) =>
+                                itemIndex === index ? { ...item, field_value: event.target.value } : item,
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
               {progress > 0 && (
                 <div className="progress-wrap">
                   <div
@@ -375,11 +597,20 @@ export default function CleanerTasksPage() {
                   <small>Uploading... {progress}%</small>
                 </div>
               )}
-              {formError && <p className="form-error" role="alert">{formError}</p>}
+              {formError && (
+                <div className="form-error" role="alert">
+                  <span>{formError}</span>
+                  {mediaFile && !saving && (
+                    <button type="button" className="text-button" onClick={saveAction}>
+                      Retry
+                    </button>
+                  )}
+                </div>
+              )}
               <div className="modal-actions">
                 <button type="button" className="secondary-button" onClick={() => setSelectedTask(null)}>Cancel</button>
                 <button type="submit" className="primary-button" disabled={saving || !mediaFile}>
-                  {saving ? 'Preparing...' : action === 'start' ? 'Start & save' : 'Finish & save'}
+                  {saving ? 'Uploading...' : action === 'start' ? 'Start & save' : 'Finish & save'}
                 </button>
               </div>
             </form>

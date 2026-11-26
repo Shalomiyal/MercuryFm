@@ -6,6 +6,7 @@ import { AuthProvider } from './contexts/AuthContext'
 import { DataRefreshProvider } from './contexts/DataRefreshContext'
 import { ThemeProvider } from './contexts/ThemeContext'
 import { ConfirmProvider } from './components/ui/ConfirmProvider'
+import { ToastProvider } from './components/ui/ToastProvider'
 import DialogA11y from './components/ui/DialogA11y'
 import ErrorBoundary from './components/ErrorBoundary'
 import './styles.css'
@@ -16,12 +17,14 @@ createRoot(document.getElementById('root')).render(
       <ThemeProvider>
         <AuthProvider>
           <DataRefreshProvider>
-            <ConfirmProvider>
-              <DialogA11y />
-              <ErrorBoundary>
-                <App />
-              </ErrorBoundary>
-            </ConfirmProvider>
+            <ToastProvider>
+              <ConfirmProvider>
+                <DialogA11y />
+                <ErrorBoundary>
+                  <App />
+                </ErrorBoundary>
+              </ConfirmProvider>
+            </ToastProvider>
           </DataRefreshProvider>
         </AuthProvider>
       </ThemeProvider>

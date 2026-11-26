@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { supabase } from '../lib/supabase'
+import BrandLogo from '../components/ui/BrandLogo'
 import PasswordInput from '../components/ui/PasswordInput'
 
 export default function LoginPage() {
@@ -118,12 +119,9 @@ export default function LoginPage() {
   return (
     <main className="login-page">
       <section className="login-card" aria-labelledby="login-title">
-        <div className="brand login-brand">
-          <span className="brand-mark">M</span>
-          <div><strong>MERCURY</strong><small>FM</small></div>
-        </div>
         <div>
-          <p className="eyebrow">Organization login</p>
+          <BrandLogo subtitle="Workforce & Operations" />
+          <p className="eyebrow" style={{ marginTop: 14 }}>Organization login</p>
           <h1 id="login-title">Sign in</h1>
         </div>
         <form onSubmit={submit} noValidate>
@@ -148,6 +146,7 @@ export default function LoginPage() {
             type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
+            placeholder="name@company.com"
             autoComplete="email"
             required
             aria-required="true"
@@ -159,6 +158,7 @@ export default function LoginPage() {
             label="Password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
+            placeholder="Enter your password"
             autoComplete="current-password"
             required
             aria-required="true"

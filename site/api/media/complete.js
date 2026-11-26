@@ -1,3 +1,7 @@
+/**
+ * @deprecated Legacy chunked DB upload endpoint. New uploads go directly to
+ * Supabase Storage ("work-media" bucket) from src/lib/media.js.
+ */
 import {
   json,
   verifyTenantCaller,

@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { apiPostAuthed } from '../lib/api'
 import { useAuth } from '../contexts/AuthContext'
 import { useDataRefresh } from '../contexts/DataRefreshContext'
 import { useConfirm } from '../components/ui/ConfirmProvider'
+import Avatar from '../components/ui/Avatar'
+import PageHeader from '../components/ui/PageHeader'
+import StatCard from '../components/ui/StatCard'
+import StatusBadge from '../components/ui/StatusBadge'
 import { friendlyError } from '../lib/format'
 
 function emptyDraft() {
@@ -26,6 +30,20 @@ export default function UsersPage() {
   const [formError, setFormError] = useState('')
   const [success, setSuccess] = useState('')
   const [tempPassword, setTempPassword] = useState('')
+  const [search, setSearch] = useState('')
+  const [roleFilter, setRoleFilter] = useState('all')
+
+  const visibleUsers = useMemo(() => {
+    const term = search.trim().toLowerCase()
+    return users.filter((u) => {
+      if (roleFilter !== 'all' && u.role !== roleFilter) return false
+      if (term) {
+        const hay = `${u.full_name || ''} ${u.email || ''} ${u.phone || ''} ${u.role || ''}`.toLowerCase()
+        if (!hay.includes(term)) return false
+      }
+      return true
+    })
+  }, [users, search, roleFilter])
 
   async function loadUsers() {
     if (!schemaName) {
@@ -132,17 +150,44 @@ export default function UsersPage() {
 
   return (
     <section className="content-page">
-      <div className="page-heading">
-        <div>
-          <p className="eyebrow">Organization accounts</p>
-          <h2>Users</h2>
-        </div>
-        {profile?.role === 'org_admin' && (
-          <button type="button" className="primary-button page-button" onClick={openCreate}>
-            Create user
-          </button>
-        )}
+      <PageHeader
+        eyebrow="Administration"
+        title="Staff & Users"
+        subtitle="Manage staff accounts, operational roles, and password resets."
+        actions={
+          profile?.role === 'org_admin' ? (
+            <button type="button" className="primary-button page-button" onClick={openCreate}>
+              + New user
+            </button>
+          ) : null
+        }
+      />
+
+      <div className="wt-kpi-grid cols-3">
+        <StatCard label="Total Accounts" value={users.length} sublabel="In organization" tone="primary" />
+        <StatCard label="Cleaning Staff" value={users.filter((u) => u.role === 'cleaner').length} sublabel="Field team" tone="accent" />
+        <StatCard label="Admins" value={users.filter((u) => u.role === 'admin' || u.role === 'org_admin').length} sublabel="Operations & Org" tone="info" />
       </div>
+
+      {users.length > 0 && (
+        <div className="toolbar" style={{ marginBottom: 16 }}>
+          <label className="search-field">
+            <span className="sr-only">Search users</span>
+            <input
+              type="search"
+              placeholder="Search name, email, or phone..."
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+          <select aria-label="Role filter" value={roleFilter} onChange={(event) => setRoleFilter(event.target.value)}>
+            <option value="all">All Roles</option>
+            <option value="org_admin">Org Admin</option>
+            <option value="admin">Admin</option>
+            <option value="cleaner">Cleaner</option>
+          </select>
+        </div>
+      )}
 
       {success && <div className="success-banner" role="status">{success}</div>}
       {tempPassword && (
@@ -166,9 +211,13 @@ export default function UsersPage() {
             <button type="button" className="secondary-button" onClick={openCreate}>Create user</button>
           )}
         </div>
+      ) : visibleUsers.length === 0 ? (
+        <div className="empty-state">
+          <p>No users match your search or filter.</p>
+        </div>
       ) : (
         <div className="template-grid">
-          {users.map((user) => {
+          {visibleUsers.map((user) => {
             const canManage = profile?.role === 'org_admin' &&
               ['admin', 'cleaner'].includes(user.role)
             const busy = busyUserId === user.id
@@ -176,13 +225,16 @@ export default function UsersPage() {
             return (
               <article className="template-card" key={user.id}>
                 <div className="template-card-heading">
-                  <div>
-                    <h3>{user.full_name}</h3>
-                    <p>{user.email || user.id}</p>
-                    {user.nic && <p>NIC: {user.nic}</p>}
-                    {user.phone && <p>Phone: {user.phone}</p>}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                    <Avatar name={user.full_name} size="md" />
+                    <div style={{ minWidth: 0 }}>
+                      <h3>{user.full_name}</h3>
+                      <p>{user.email || user.id}</p>
+                      {user.nic && <p>NIC: {user.nic}</p>}
+                      {user.phone && <p>Phone: {user.phone}</p>}
+                    </div>
                   </div>
-                  <span className="count-badge">{user.role}</span>
+                  <StatusBadge status={user.role === 'cleaner' ? 'active' : 'check_in'} label={user.role} showDot={false} />
                 </div>
 
                 {canManage && (

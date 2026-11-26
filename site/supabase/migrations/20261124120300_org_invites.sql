@@ -24,9 +24,9 @@ grant select, insert, update, delete on table public.organization_invites to ser
 create or replace function public.create_organization_invite(
   p_org_id uuid,
   p_code_hash text,
+  p_expires_at timestamptz,
   p_email text default null,
   p_role public.user_role default 'cleaner',
-  p_expires_at timestamptz,
   p_created_by uuid default null
 ) returns uuid
 language plpgsql
@@ -95,10 +95,10 @@ begin
 end;
 $$;
 
-revoke all on function public.create_organization_invite(uuid, text, text, public.user_role, timestamptz, uuid) from public, anon, authenticated;
+revoke all on function public.create_organization_invite(uuid, text, timestamptz, text, public.user_role, uuid) from public, anon, authenticated;
 revoke all on function public.validate_organization_invite(text, text) from public, anon, authenticated;
 revoke all on function public.consume_organization_invite(uuid) from public, anon, authenticated;
 
-grant execute on function public.create_organization_invite(uuid, text, text, public.user_role, timestamptz, uuid) to service_role;
+grant execute on function public.create_organization_invite(uuid, text, timestamptz, text, public.user_role, uuid) to service_role;
 grant execute on function public.validate_organization_invite(text, text) to service_role;
 grant execute on function public.consume_organization_invite(uuid) to service_role;

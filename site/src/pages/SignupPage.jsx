@@ -10,7 +10,6 @@ export default function SignupPage() {
   const [nic, setNic] = useState('')
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
-  const [inviteCode, setInviteCode] = useState('')
   const [error, setError] = useState('')
   const [sending, setSending] = useState(false)
 
@@ -35,31 +34,21 @@ export default function SignupPage() {
       setError('Enter a valid email address.')
       return
     }
-    if (!/^[A-Za-z0-9]{6,20}$/.test(inviteCode.trim())) {
-      setError('Enter the invite code provided by your administrator.')
-      return
-    }
     setSending(true)
     try {
       const turnstileToken = await getTurnstileToken()
-      const result = await apiPost('/start-signup', {
+      await apiPost('/start-signup', {
         turnstileToken,
         organizationId: slug,
         fullName: fullName.trim(),
         nic: normalizedNic,
         phone: phone.trim(),
         email: email.trim(),
-        inviteCode: inviteCode.trim().toUpperCase(),
       })
-      navigate('/verify-email', {
+      navigate('/login', {
         replace: true,
         state: {
-          email: email.trim(),
-          fullName: fullName.trim(),
-          fromSignup: true,
-          codeSent: !result?.cooldown,
-          delivered: result?.delivered,
-          tempPassword: result?.tempPassword,
+          message: 'Account created. Sign in with your email and NIC as your password. You can change it after logging in.',
         },
       })
     } catch (requestError) {
@@ -90,14 +79,6 @@ export default function SignupPage() {
             }
             placeholder="Organization slug"
             autoComplete="organization"
-          />
-          <label htmlFor="signup-invite">Invite code</label>
-          <input
-            id="signup-invite"
-            value={inviteCode}
-            onChange={(event) => setInviteCode(event.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20))}
-            placeholder="Invite code from your administrator"
-            autoComplete="off"
           />
           <label htmlFor="signup-name">Full name</label>
           <input

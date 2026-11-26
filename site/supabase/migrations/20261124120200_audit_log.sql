@@ -39,8 +39,8 @@ revoke insert, update, delete on table public.audit_log from authenticated;
 grant select on table public.audit_log to authenticated;
 
 create or replace function public.write_audit_log(
-  p_actor_id uuid default null,
   p_action text,
+  p_actor_id uuid default null,
   p_org_id uuid default null,
   p_target_user_id uuid default null,
   p_metadata jsonb default '{}'::jsonb
@@ -66,5 +66,5 @@ begin
 end;
 $$;
 
-revoke all on function public.write_audit_log(uuid, text, uuid, uuid, jsonb) from public, anon, authenticated;
-grant execute on function public.write_audit_log(uuid, text, uuid, uuid, jsonb) to service_role;
+revoke all on function public.write_audit_log(text, uuid, uuid, uuid, jsonb) from public, anon, authenticated;
+grant execute on function public.write_audit_log(text, uuid, uuid, uuid, jsonb) to service_role;

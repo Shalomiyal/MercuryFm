@@ -3,6 +3,7 @@ import { useAuth } from '../contexts/AuthContext'
 import { useDataRefresh } from '../contexts/DataRefreshContext'
 import { usePagination } from '../hooks/usePagination'
 import { db, resolveMySchema } from '../lib/db'
+import { supabase } from '../lib/supabase'
 import { formatDateTime, friendlyError } from '../lib/format'
 import { ROOM_STATUSES, setRoomStatus, statusLabel } from '../lib/rooms'
 import {
@@ -271,15 +272,37 @@ export default function RoomStatusPage() {
       setHistoryLoading(false)
       return
     }
-    const { data, error: historyLoadError } = await orgDb
-      .from('room_status_history')
-      .select('id, status, status_time, created_at')
-      .eq('room_id', room.room_id)
-      .order('created_at', { ascending: false })
-    if (historyLoadError) {
-      setHistoryError(historyLoadError.message)
-    } else {
-      setHistory(data || [])
+
+    try {
+      const [statusResult, memberResult, profileResult] = await Promise.all([
+        orgDb
+          .from('room_status_history')
+          .select('id, status, status_time, created_at, created_by')
+          .eq('room_id', room.room_id)
+          .order('status_time', { ascending: false })
+          .limit(100),
+        orgDb.from('members').select('id, full_name'),
+        supabase.from('profiles').select('id, full_name'),
+      ])
+
+      if (statusResult.error) throw statusResult.error
+
+      const nameById = Object.fromEntries([
+        ...(profileResult.data || []).map((p) => [p.id, p.full_name]),
+        ...(memberResult.data || []).map((m) => [m.id, m.full_name]),
+      ])
+
+      setHistory(
+        (statusResult.data || []).map((h) => ({
+          id: `s-${h.id}`,
+          label: statusLabel(h.status),
+          status: h.status,
+          actor: h.created_by ? (nameById[h.created_by] || 'Admin') : 'Admin',
+          time: h.status_time,
+        })),
+      )
+    } catch (err) {
+      setHistoryError(err.message)
     }
     setHistoryLoading(false)
   }
@@ -699,9 +722,13 @@ export default function RoomStatusPage() {
                   <li key={entry.id}>
                     <span className={`status-dot status-${entry.status}`} />
                     <div>
-                      <strong>{statusLabel(entry.status)}</strong>
-                      <p>Entered: {formatDateTime(entry.status_time)}</p>
-                      <small>Saved: {formatDateTime(entry.created_at)}</small>
+                      <strong>{entry.label}</strong>
+                      <p style={{ margin: '2px 0 0', color: 'var(--color-text-secondary)', fontSize: 13 }}>
+                        {entry.actor}
+                      </p>
+                      <p style={{ margin: '1px 0 0', color: 'var(--color-text-muted)', fontSize: 12 }}>
+                        {formatDateTime(entry.time)}
+                      </p>
                     </div>
                   </li>
                 ))}

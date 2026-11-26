@@ -10,12 +10,49 @@ import { buildFeedTimeline, STATUS_COLORS, STATUS_LABELS } from './feedUtils'
 import DateDivider from './DateDivider'
 import FeedBubble from './FeedBubble'
 import FeedSkeleton from './FeedSkeleton'
+import { getSignedUrlsBatch } from './signedUrlCache'
 import './WorkFeed.css'
 
 const TIME_FMT = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
 
 function initials(name = '') {
   return name.trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || 'FD'
+}
+
+// Renders a signed thumbnail for a storage path (falls back to fullPath if thumb fails)
+function SignedThumb({ path, fullPath, alt }) {
+  const [url, setUrl] = useState(null)
+  const [fallbackUrl, setFallbackUrl] = useState(null)
+
+  useEffect(() => {
+    let active = true
+    const paths = [path, fullPath].filter(Boolean)
+    if (paths.length === 0) return undefined
+    getSignedUrlsBatch(paths)
+      .then((map) => {
+        if (!active) return
+        const thumb = path ? map?.[path] : null
+        const full = fullPath ? map?.[fullPath] : null
+        setUrl(thumb || full || null)
+        setFallbackUrl(full || null)
+      })
+      .catch(() => {})
+    return () => { active = false }
+  }, [path, fullPath])
+
+  if (!url) return null
+  return (
+    <div style={{ marginTop: 6, borderRadius: 10, overflow: 'hidden', maxWidth: 260 }}>
+      <img
+        src={url}
+        alt={alt || 'Room photo'}
+        style={{ width: '100%', display: 'block', borderRadius: 10 }}
+        onError={() => {
+          if (fallbackUrl && url !== fallbackUrl) setUrl(fallbackUrl)
+        }}
+      />
+    </div>
+  )
 }
 
 export default function WorkFeed({ workDate, fullHeight = false }) {
@@ -206,59 +243,43 @@ export default function WorkFeed({ workDate, fullHeight = false }) {
                 if (item.type === 'system') {
                   const ev = item.event
                   const sender = ev.updated_by_name || 'Admin'
-                  const statusLabel = STATUS_LABELS[ev.status] || ev.status || 'Updated'
+                  const statusText = STATUS_LABELS[ev.status] || ev.status || 'Updated'
                   const roomLabel = ev.room_id ? `Room ${ev.room_id}` : 'Room'
                   const timeLabel = ev.created_at ? TIME_FMT.format(new Date(ev.created_at)) : ''
                   const sc = STATUS_COLORS[ev.status] || {
-                    dot: '#0369a1',
-                    bg: 'rgba(3, 105, 161, 0.12)',
-                    text: '#0369a1',
-                    border: 'rgba(3, 105, 161, 0.35)',
+                    dot: '#0369a1', bg: 'rgba(3,105,161,0.12)', text: '#0369a1', border: 'rgba(3,105,161,0.35)',
                   }
+                  // Render as a proper chat bubble — same as media bubble
                   return (
-                    <article key={item.key} className="feed-bubble is-status-bubble">
-                      <div
-                        className="feed-avatar"
-                        style={{ background: sc.dot }}
-                        aria-hidden="true"
-                        title={sender}
-                      >
+                    <article key={item.key} className="feed-bubble">
+                      <div className="feed-avatar" style={{ background: sc.dot }} aria-hidden="true" title={sender}>
                         {initials(sender)}
                       </div>
-                      <div className="feed-bubble-body" style={{ borderLeft: `3px solid ${sc.dot}` }}>
+                      <div className="feed-bubble-body">
                         <span className="feed-sender" style={{ color: sc.dot }}>{sender}</span>
-                        <div className="feed-caption" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                          <span>{roomLabel} ·</span>
-                          <span
-                            style={{
-                              display: 'inline-flex',
-                              alignItems: 'center',
-                              gap: 5,
-                              padding: '2px 8px',
-                              borderRadius: 999,
-                              background: sc.bg,
-                              color: sc.text,
-                              border: `1px solid ${sc.border}`,
-                              fontWeight: 600,
-                              fontSize: '12px',
-                            }}
-                          >
-                            <span
-                              style={{
-                                width: 8,
-                                height: 8,
-                                borderRadius: '50%',
-                                background: sc.dot,
-                                display: 'inline-block',
-                              }}
-                            />
-                            {statusLabel}
+                        <div className="feed-meta-line">{roomLabel}</div>
+                        {/* Status badge */}
+                        <div style={{ margin: '4px 0 2px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{
+                            display: 'inline-flex', alignItems: 'center', gap: 5,
+                            padding: '3px 10px', borderRadius: 999,
+                            background: sc.bg, color: sc.text, border: `1px solid ${sc.border}`,
+                            fontWeight: 600, fontSize: 12,
+                          }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: sc.dot, display: 'inline-block' }} />
+                            {statusText}
                           </span>
                         </div>
+                        {/* Inline photo/video preview if attached */}
+                        {(ev.thumb_path || ev.storage_path) && (
+                          <SignedThumb
+                            path={ev.thumb_path}
+                            fullPath={ev.storage_path}
+                            alt={`${roomLabel} ${statusText}`}
+                          />
+                        )}
                         {timeLabel && (
-                          <time className="feed-timestamp" dateTime={ev.created_at}>
-                            {timeLabel}
-                          </time>
+                          <time className="feed-timestamp" dateTime={ev.created_at}>{timeLabel}</time>
                         )}
                       </div>
                     </article>

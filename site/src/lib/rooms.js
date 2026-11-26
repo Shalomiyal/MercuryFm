@@ -1,4 +1,5 @@
 import { db } from './db'
+import { supabase } from './supabase'
 import { apiPostAuthed } from './api'
 
 export const ROOM_STATUSES = [
@@ -24,46 +25,58 @@ export async function setRoomStatus({ roomId, status, statusTime, profileId, med
   }
   const isoTime = statusTime ? new Date(statusTime).toISOString() : new Date().toISOString()
 
-  // 1. Try direct DB insert
-  try {
-    const orgDb = await db()
-    const row = {
-      room_id: roomId,
-      status,
-      status_time: isoTime,
-      created_by: profileId || null,
-      ...(mediaId ? { media_id: mediaId } : {}),
-    }
-    const { error: insertError } = await orgDb.from('room_status_history').insert(row)
+  const buildRow = (withCreatedBy, withMedia) => ({
+    room_id: roomId,
+    status,
+    status_time: isoTime,
+    created_by: withCreatedBy ? (profileId || null) : null,
+    ...(withMedia && mediaId ? { media_id: mediaId } : {}),
+  })
 
-    if (!insertError) {
-      return { success: true, roomId, status, statusTime: isoTime }
+  // Helper: attempt one insert, return true on success or if row already exists
+  async function tryInsert(client, row) {
+    // upsert with ignoreDuplicates silently skips conflicts
+    const { error } = await client
+      .from('room_status_history')
+      .upsert(row, { ignoreDuplicates: true })
+    if (!error) return true
+    // media_id column missing — retry without it
+    if (/media_id/i.test(error.message)) {
+      const { media_id: _dropped, ...rowWithoutMedia } = row
+      const { error: e2 } = await client
+        .from('room_status_history')
+        .upsert(rowWithoutMedia, { ignoreDuplicates: true })
+      if (!e2) return true
     }
-
-    // If media_id column doesn't exist yet, retry without it
-    if (/media_id/i.test(insertError.message)) {
-      const { error: noMediaError } = await orgDb.from('room_status_history').insert({
-        room_id: roomId, status, status_time: isoTime, created_by: profileId || null,
-      })
-      if (!noMediaError) return { success: true, roomId, status, statusTime: isoTime }
-    }
-
-    // If FK constraint on created_by failed, retry with created_by: null
-    if (/foreign key|created_by/i.test(insertError.message)) {
-      const { error: retryError } = await orgDb.from('room_status_history').insert({
-        room_id: roomId, status, status_time: isoTime, created_by: null,
-        ...(mediaId ? { media_id: mediaId } : {}),
-      })
-      if (!retryError) return { success: true, roomId, status, statusTime: isoTime }
-    }
-
-    // If RLS blocked, fall through to API
-    console.warn('Direct DB insert failed, falling back to API:', insertError.message)
-  } catch (dbError) {
-    console.warn('DB client error, falling back to API:', dbError)
+    // Any remaining conflict = already saved
+    if (error.code === '23505' || /conflict|duplicate|unique/i.test(error.message)) return true
+    return false
   }
 
-  // 2. Fall back to /api/update-room-status
-  const res = await apiPostAuthed('/update-room-status', { roomId, status, statusTime: isoTime })
+  // 1. Try with orgDb (tenant schema client, user JWT)
+  try {
+    const orgDb = await db()
+    if (await tryInsert(orgDb, buildRow(true, true))) {
+      return { success: true, roomId, status, statusTime: isoTime }
+    }
+  } catch { /* fall through */ }
+
+  // 2. Try with raw supabase.schema() — sometimes resolves RLS differently
+  try {
+    const { data: schemaData } = await supabase.rpc('my_schema')
+    if (schemaData) {
+      const schemaClient = supabase.schema(schemaData)
+      if (await tryInsert(schemaClient, buildRow(true, true))) {
+        return { success: true, roomId, status, statusTime: isoTime }
+      }
+      // Retry without created_by if FK error
+      if (await tryInsert(schemaClient, buildRow(false, true))) {
+        return { success: true, roomId, status, statusTime: isoTime }
+      }
+    }
+  } catch { /* fall through */ }
+
+  // 3. Fall back to /api/update-room-status (server uses service role key)
+  const res = await apiPostAuthed('/update-room-status', { roomId, status, statusTime: isoTime, mediaId })
   return res
 }

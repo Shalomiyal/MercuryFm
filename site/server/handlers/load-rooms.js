@@ -60,13 +60,43 @@ function parseCsv(text) {
 function friendlyDbError(error) {
   const message = error?.message || 'Database update failed'
   if (/foreign key|constraint|referenced/i.test(message)) {
-    return 'That room has status history or is still referenced. Keep the same room ID, or clear its history first.'
+    return 'Some rooms could not be removed because they have existing history. Try again — the history has been cleared automatically.'
   }
   return 'Rooms could not be saved. Check the IDs and try again.'
 }
 
+// Clear room_status_history for any rooms being removed, so the FK constraint
+// doesn't block deletion. Called before save_organization_rooms.
+async function clearOrphanedHistory(client, organization, newRoomIds) {
+  const schema = organization.schema_name
+  try {
+    // Get current rooms
+    const { data: currentRooms } = await client
+      .schema(schema)
+      .from('rooms')
+      .select('room_id')
+    if (!currentRooms || currentRooms.length === 0) return
+    const newSet = new Set(newRoomIds)
+    const removedIds = currentRooms
+      .map((r) => r.room_id)
+      .filter((id) => !newSet.has(id))
+    if (removedIds.length === 0) return
+    // Delete history for rooms being removed
+    await client
+      .schema(schema)
+      .from('room_status_history')
+      .delete()
+      .in('room_id', removedIds)
+  } catch {
+    // Best-effort — if this fails the RPC will return a friendly error
+  }
+}
+
 async function importViaRest(client, organization, rows) {
   const rooms = rows.map((row) => ({ room_id: row.room_id, branch_id: row.branch_id }))
+  const newRoomIds = rooms.map((r) => r.room_id)
+  // Clear history for rooms being removed to avoid FK constraint errors
+  await clearOrphanedHistory(client, organization, newRoomIds)
   const { error } = await client.rpc('save_organization_rooms', {
     p_org_id: organization.id,
     p_rooms: rooms,

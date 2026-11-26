@@ -152,9 +152,15 @@ export function AuthProvider({ children }) {
       refreshProfile,
       signIn: (email, password) =>
         supabase.auth.signInWithPassword({ email, password }),
-      signOut: () => {
+      signOut: async () => {
         clearTenantCache()
-        return supabase.auth.signOut()
+        try {
+          await supabase.auth.signOut({ scope: 'local' })
+        } catch {
+          // Session already invalid — clear local state silently
+        }
+        // Always clear local storage regardless of API response
+        try { localStorage.clear() } catch { /* ignore */ }
       },
     }),
     [session, profile, schemaName, loading, refreshProfile],

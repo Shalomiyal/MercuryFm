@@ -20,7 +20,7 @@ import CameraCapture from '../components/ui/CameraCapture'
 import CleanerMediaPreview from '../components/ui/CleanerMediaPreview'
 import LoadMoreButton from '../components/ui/LoadMoreButton'
 import { formatTime, friendlyError } from '../lib/format'
-import { setRoomStatus, statusLabel } from '../lib/rooms'
+import { statusLabel } from '../lib/rooms'
 
 function today() {
   return new Date().toISOString().slice(0, 10)
@@ -109,8 +109,22 @@ export default function CleanerTasksPage() {
   async function loadTasks() {
     setLoading(true)
     setError('')
-    const { data: sessionData } = await supabase.auth.getSession()
-    const cleanerId = sessionData.session?.user.id
+    // Ensure the JWT is fresh — getSession returns cached (possibly expired) token,
+    // so call getUser which forces a refresh if needed.
+    let cleanerId
+    try {
+      const { data: userData, error: userError } = await supabase.auth.getUser()
+      if (userError || !userData?.user?.id) {
+        // Fallback to cached session if getUser fails (offline, etc.)
+        const { data: sessionData } = await supabase.auth.getSession()
+        cleanerId = sessionData.session?.user.id
+      } else {
+        cleanerId = userData.user.id
+      }
+    } catch {
+      const { data: sessionData } = await supabase.auth.getSession()
+      cleanerId = sessionData.session?.user.id
+    }
     if (!cleanerId) {
       setError('Could not identify the signed-in cleaner.')
       setLoading(false)
@@ -150,14 +164,25 @@ export default function CleanerTasksPage() {
       setTasks([])
     } else {
       const allTasks = (result.data || []).flatMap((assignment) =>
-        (assignment.daily_tasks || []).map((task) => ({
-          ...task,
-          assignmentId: assignment.id,
-          workDate: assignment.work_date,
-          fields: [...(task.daily_task_field_values || [])].sort(
+        (assignment.daily_tasks || []).map((task) => {
+          const allFields = [...(task.daily_task_field_values || [])].sort(
             (left, right) => (left.sort_order || 0) - (right.sort_order || 0),
-          ),
-        })),
+          )
+          // Extract reserved branch/room values from task_fields
+          const branchField = allFields.find((f) => f.field_name === '__branch__')
+          const roomField   = allFields.find((f) => f.field_name === '__room__')
+          return {
+            ...task,
+            // Use reserved field values if DB columns aren't set
+            branch_id: task.branch_id || branchField?.field_value || '',
+            room_id:   task.room_id   || roomField?.field_value   || '',
+            assignmentId: assignment.id,
+            workDate: assignment.work_date,
+            fields: allFields.filter(
+              (f) => f.field_name !== '__branch__' && f.field_name !== '__room__',
+            ),
+          }
+        }),
       )
       setTasks(
         allTasks.sort((left, right) =>
@@ -310,8 +335,16 @@ export default function CleanerTasksPage() {
     setSaving(true)
     setFormError('')
     setProgress(5)
-    const { data: sessionData } = await supabase.auth.getSession()
-    const cleanerId = sessionData.session?.user.id
+    // Force a token refresh before upload — getSession can return an expired JWT
+    let cleanerId
+    try {
+      const { data: userData, error: userError } = await supabase.auth.getUser()
+      cleanerId = !userError ? userData?.user?.id : null
+    } catch { /* fall through */ }
+    if (!cleanerId) {
+      const { data: sessionData } = await supabase.auth.getSession()
+      cleanerId = sessionData.session?.user.id
+    }
     if (!cleanerId || !schemaName) {
       setFormError('Your session expired. Sign in again.')
       setSaving(false)
@@ -335,6 +368,10 @@ export default function CleanerTasksPage() {
       })
 
       const orgDb = await db()
+      const resolvedRoom = resolveTaskRoom(selectedTask, rooms)
+      const effectiveBranchId = selectedBranchId || selectedTask.branch_id || resolvedRoom?.branch_id || ''
+      const effectiveRoomId = selectedRoomId || selectedTask.room_id || resolvedRoom?.room_id || ''
+
       if (action === 'start') {
         const insertPayload = {
           daily_task_id: selectedTask.id,
@@ -343,25 +380,14 @@ export default function CleanerTasksPage() {
           started_at: new Date().toISOString(),
           start_photo_id: uploaded.mediaId,
           state: 'in_progress',
-          ...(selectedBranchId ? { branch_id: selectedBranchId } : {}),
-          ...(selectedRoomId ? { room_id: selectedRoomId } : {}),
+          ...(effectiveBranchId ? { branch_id: effectiveBranchId } : {}),
+          ...(effectiveRoomId ? { room_id: effectiveRoomId } : {}),
         }
         const { error: insertError } = await orgDb.from('task_runs').insert(insertPayload)
         if (insertError) throw insertError
 
-        // Auto-update room status to clean_start
-        const targetRoom =
-          selectedRoomId ||
-          selectedTask.room_id ||
-          resolveTaskRoom(selectedTask, rooms)?.room_id
-        if (targetRoom) {
-          await setRoomStatus({
-            roomId: targetRoom,
-            status: 'clean_start',
-            statusTime: new Date().toISOString(),
-            profileId: cleanerId,
-          })
-        }
+        // Room status is synced automatically by the DB trigger
+        // trg_task_run_room_status → sync_task_run_to_room_status()
       } else {
         const run = taskRunOf(selectedTask)
         if (!run) throw new Error('Start this task before finishing it.')
@@ -376,20 +402,8 @@ export default function CleanerTasksPage() {
           .eq('cleaner_id', cleanerId)
         if (updateError) throw updateError
 
-        // Auto-update room status to clean_finished
-        const targetRoom =
-          selectedRoomId ||
-          selectedTask.room_id ||
-          run.room_id ||
-          resolveTaskRoom(selectedTask, rooms)?.room_id
-        if (targetRoom) {
-          await setRoomStatus({
-            roomId: targetRoom,
-            status: 'clean_finished',
-            statusTime: new Date().toISOString(),
-            profileId: cleanerId,
-          })
-        }
+        // Room status is synced automatically by the DB trigger
+        // trg_task_run_room_status → sync_task_run_to_room_status()
       }
       if (action === 'finish') {
         for (const field of actionFieldDrafts) {

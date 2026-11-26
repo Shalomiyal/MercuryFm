@@ -80,11 +80,13 @@ export function formatSystemMessage(event) {
 }
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000
+const SYSTEM_DEDUP_MS = 90_000 // collapse duplicate status events within 90 seconds
 
 /**
  * Groups chronological feed items (media posts + system events):
  * - Inserts sticky date dividers when the calendar day changes.
- * - Keeps system events as centered rows.
+ * - Deduplicates consecutive system events for the same room + status
+ *   that occur within 90 seconds (keeps the first, which carries the media link).
  * - Groups consecutive media posts from the same cleaner for the same task
  *   posted within 5 minutes into a single multi-tile bubble.
  */
@@ -93,10 +95,34 @@ export function buildFeedTimeline(items) {
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
   )
 
+  // Deduplicate system events: same room_id + status within SYSTEM_DEDUP_MS
+  const deduped = []
+  for (const item of sorted) {
+    if (item.itemType === 'system') {
+      const dup = deduped.find(
+        (prev) =>
+          prev.itemType === 'system' &&
+          prev.room_id === item.room_id &&
+          prev.status === item.status &&
+          Math.abs(
+            new Date(item.created_at).getTime() - new Date(prev.created_at).getTime(),
+          ) < SYSTEM_DEDUP_MS,
+      )
+      if (dup) {
+        // Keep the one that has media attached; prefer the earlier one otherwise
+        if (!dup.storage_path && !dup.thumb_path && (item.storage_path || item.thumb_path)) {
+          Object.assign(dup, { storage_path: item.storage_path, thumb_path: item.thumb_path })
+        }
+        continue // skip this duplicate
+      }
+    }
+    deduped.push(item)
+  }
+
   const timeline = []
   let lastDate = ''
 
-  for (const item of sorted) {
+  for (const item of deduped) {
     const date = item.created_at ? item.created_at.slice(0, 10) : ''
     if (date && date !== lastDate) {
       timeline.push({ type: 'divider', date, key: `divider-${date}` })

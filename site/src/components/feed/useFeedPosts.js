@@ -291,8 +291,10 @@ export function useFeedPosts({ workDate, allDates = false, schemaName, revision 
       await getSignedUrlsBatch(thumbPaths).catch(() => {})
     }
 
-    // Fetch room_status_history system events (only on initial page load or date filter)
+    // Fetch room_status_history — always use the simple query (no media join)
+    // so it works even before the migration. Media photos handled separately below.
     let systemRows = []
+    let mediaFromStatus = []
     if (!beforeTimestamp) {
       let histQuery = orgDb
         .from('room_status_history')
@@ -306,26 +308,161 @@ export function useFeedPosts({ workDate, allDates = false, schemaName, revision 
           .lte('status_time', `${workDate}T23:59:59.999`)
       }
 
-      const [{ data: histData }, { data: memberRows }, { data: profileRows }] = await Promise.all([
+      const [histResult, { data: memberRows }, { data: profileRows }] = await Promise.all([
         histQuery,
         orgDb.from('members').select('id, full_name'),
         supabase.from('profiles').select('id, full_name'),
       ])
+
+      if (histResult.error) throw histResult.error
+
       const memberById = Object.fromEntries([
         ...(profileRows || []).map((p) => [p.id, p.full_name]),
         ...(memberRows || []).map((m) => [m.id, m.full_name]),
       ])
-      systemRows = (histData || []).map((h) => ({
-        itemType: 'system',
-        post_id: `sys-${h.id}`,
-        room_id: h.room_id,
-        status: h.status,
-        created_by: h.created_by || null,
-        updated_by_name: h.created_by ? memberById[h.created_by] || '' : '',
-        created_at: h.status_time,
-        isMock: false,
-      }))
+
+      // Try to match status history rows with their media photos.
+      // Strategy 1: media_id FK join (works after migration).
+      // Strategy 2: query media by storage_path pattern (always works).
+      let mediaByHistId = {}
+      const histData = histResult.data || []
+
+      // Strategy 1: try media_id join
+      try {
+        let mediaLinkQuery = orgDb
+          .from('room_status_history')
+          .select('id, media_id, m:media!media_id(storage_path, thumb_path)')
+          .not('media_id', 'is', null)
+          .order('status_time', { ascending: false })
+          .limit(20)
+        if (!allDates && workDate) {
+          mediaLinkQuery = mediaLinkQuery
+            .gte('status_time', `${workDate}T00:00:00`)
+            .lte('status_time', `${workDate}T23:59:59.999`)
+        }
+        const { data: mediaLinks, error: mediaLinkError } = await mediaLinkQuery
+        if (!mediaLinkError) {
+          for (const row of mediaLinks || []) {
+            if (row.m?.storage_path) mediaByHistId[row.id] = row.m
+          }
+        }
+      } catch { /* migration not run yet */ }
+
+      // Strategy 2: for any rows still missing media_id, match by storage_path pattern in media table
+      const unlinkedAfterS1 = histData.filter((h) => !mediaByHistId[h.id])
+      if (unlinkedAfterS1.length > 0) {
+        try {
+          // Room status media paths contain /rooms/ — fetch recent ones and match by room+time
+          const { data: recentMedia } = await orgDb
+            .from('media')
+            .select('id, storage_path, thumb_path, created_by, created_at')
+            .like('storage_path', '%/rooms/%')
+            .order('created_at', { ascending: false })
+            .limit(100)
+          if (recentMedia?.length) {
+            for (const h of unlinkedAfterS1) {
+              const histTime = new Date(h.status_time).getTime()
+              const match = recentMedia.find((m) => {
+                // Path must contain the room_id
+                if (!m.storage_path.includes(`/rooms/${h.room_id}/`)) return false
+                // Within 10 minutes of the status update
+                const diff = Math.abs(new Date(m.created_at).getTime() - histTime)
+                return diff < 600_000
+              })
+              if (match) mediaByHistId[h.id] = match
+            }
+          }
+        } catch { /* best effort */ }
+      }
+
+      // Strategy 3: Storage fallback if media table insert failed (e.g. RLS/FK on admin upload)
+      const unlinkedAfterS2 = histData.filter((h) => !mediaByHistId[h.id] && h.created_by && h.room_id)
+      if (unlinkedAfterS2.length > 0 && schemaName) {
+        try {
+          const folderCache = new Map()
+          const uniqueFolders = [...new Set(unlinkedAfterS2.map((h) => `${schemaName}/${h.created_by}/rooms/${h.room_id}`))]
+          await Promise.all(
+            uniqueFolders.map(async (folder) => {
+              const { data: files } = await supabase.storage.from('work-media').list(folder, {
+                limit: 50,
+                sortBy: { column: 'created_at', order: 'desc' },
+              })
+              folderCache.set(folder, files || [])
+            }),
+          )
+
+          for (const h of unlinkedAfterS2) {
+            const folder = `${schemaName}/${h.created_by}/rooms/${h.room_id}`
+            const files = folderCache.get(folder) || []
+            if (!files.length) continue
+            const histTime = new Date(h.status_time).getTime()
+            const prefix = `${h.status}_`
+            const mainFile = files.find((f) => {
+              if (!f.name?.startsWith(prefix) || f.name.includes('_thumb.')) return false
+              const parts = f.name.slice(prefix.length).split('_')
+              const ts = Number(parts[0])
+              if (Number.isFinite(ts) && ts > 1_000_000_000_000) {
+                return Math.abs(ts - histTime) < 600_000
+              }
+              const fTime = f.created_at ? new Date(f.created_at).getTime() : 0
+              return fTime > 0 && Math.abs(fTime - histTime) < 600_000
+            })
+            if (mainFile) {
+              const baseName = mainFile.name.replace(/\.[^.]+$/, '')
+              const thumbFile = files.find((f) => f.name === `${baseName}_thumb.jpg`)
+              mediaByHistId[h.id] = {
+                storage_path: `${folder}/${mainFile.name}`,
+                thumb_path: thumbFile ? `${folder}/${thumbFile.name}` : null,
+              }
+            }
+          }
+        } catch { /* best effort */ }
+      }
+
+      for (const h of histData) {
+        const updaterName = h.created_by ? memberById[h.created_by] || '' : ''
+        let mediaRow = mediaByHistId[h.id]
+
+        // Link clean_start / clean_finished status bubbles to their task_runs start photo / finish video
+        if (!mediaRow && (h.status === 'clean_start' || h.status === 'clean_finished')) {
+          const targetStage = h.status === 'clean_start' ? 'start' : 'finish'
+          const histTime = new Date(h.status_time).getTime()
+          const runMedia = mediaRows.find((m) => {
+            if (m.stage !== targetStage) return false
+            if (h.room_id && m.room_id && m.room_id !== h.room_id) return false
+            if (h.created_by && m.cleaner_id && m.cleaner_id !== h.created_by) return false
+            return Math.abs(new Date(m.created_at).getTime() - histTime) < 120_000
+          })
+          if (runMedia) {
+            mediaRow = {
+              storage_path: runMedia.storage_path,
+              thumb_path: runMedia.thumb_path,
+              kind: runMedia.kind,
+            }
+          }
+        }
+
+        // Every status event = one chat bubble
+        systemRows.push({
+          itemType: 'system',
+          post_id: `sys-${h.id}`,
+          room_id: h.room_id,
+          status: h.status,
+          created_by: h.created_by || null,
+          updated_by_name: updaterName,
+          created_at: h.status_time,
+          storage_path: mediaRow?.storage_path || null,
+          thumb_path: mediaRow?.thumb_path || mediaRow?.storage_path || null,
+          media_kind: mediaRow?.kind || 'photo',
+          isMock: false,
+        })
+      }
+
+      // Sign thumbnail paths for status media
+      const thumbPaths = systemRows.map((r) => r.thumb_path).filter(Boolean)
+      if (thumbPaths.length > 0) await getSignedUrlsBatch(thumbPaths).catch(() => {})
     }
+
 
     const combined = [...mediaRows, ...systemRows].sort(
       (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
@@ -336,7 +473,7 @@ export function useFeedPosts({ workDate, allDates = false, schemaName, revision 
       : null
 
     return { items: combined, hasNext, oldestStarted }
-  }, [workDate, allDates])
+  }, [workDate, allDates, schemaName])
 
   const load = useCallback(async () => {
     setLoading(true)

@@ -78,6 +78,7 @@ begin
   $t$, p_schema);
 
   -- Backfill admin/cleaner details from the old public map, if any.
+  -- Skip profiles with null full_name (new architecture stores name in tenant schema only).
   execute format($t$
     insert into %1$I.members
       (id, full_name, nic, phone, role, is_active, must_change_password, created_at)
@@ -86,6 +87,7 @@ begin
       from public.profiles p
      where p.org_id = %2$L
        and p.role in ('admin','cleaner')
+       and p.full_name is not null
     on conflict (id) do nothing
   $t$, p_schema, p_org_id);
 end $fn$;

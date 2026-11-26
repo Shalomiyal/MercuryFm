@@ -1,13 +1,10 @@
 import { adminClient } from '../lib/serverSupabase.js'
 import {
-  issueCode,
   isValidEmail,
   normalizeEmail,
   rateLimit,
   clientIp,
 } from '../lib/emailVerification.js'
-import { generateTemporaryPassword } from '../lib/passwords.js'
-import { hashInviteCode, normalizeInviteCode } from '../lib/invites.js'
 import { writeAuditLog } from '../lib/audit.js'
 import { verifyTurnstile } from '../lib/turnstile.js'
 import { sendRateLimited } from '../lib/rateLimit.js'
@@ -22,11 +19,11 @@ export default async function handler(request, response) {
     return json(response, 405, { error: 'Method not allowed' })
   }
 
-  const { organizationId, fullName, nic, phone, email, inviteCode } = request.body || {}
+  const { organizationId, fullName, nic, phone, email } = request.body || {}
   const slug = String(organizationId || '').trim().toLowerCase()
   const normalizedEmail = normalizeEmail(email)
   const normalizedNic = String(nic || '').trim().toUpperCase()
-  const normalizedInvite = normalizeInviteCode(inviteCode)
+
   if (!/^[a-z0-9_]{2,30}$/.test(slug)) {
     return json(response, 400, { error: 'Invalid organization ID' })
   }
@@ -41,13 +38,12 @@ export default async function handler(request, response) {
   if (!isValidEmail(normalizedEmail)) {
     return json(response, 400, { error: 'Enter a valid email address' })
   }
-  if (!/^[A-Z0-9]{6,20}$/.test(normalizedInvite)) {
-    return json(response, 400, { error: 'Enter the invite code from your administrator' })
-  }
+
   const challenge = await verifyTurnstile(request.body?.turnstileToken, request)
   if (!challenge.ok) {
     return json(response, 403, { error: challenge.error })
   }
+
   const ipLimit = await rateLimit(`signup-ip:${clientIp(request)}`, 10, 60 * 60 * 1000)
   if (ipLimit.limited) {
     return sendRateLimited(response, ipLimit.retryAfter, {
@@ -70,32 +66,15 @@ export default async function handler(request, response) {
     return json(response, 404, { error: 'Organization code not found or inactive' })
   }
 
-  const { data: inviteRows, error: inviteError } = await supabase.rpc(
-    'validate_organization_invite',
-    {
-      p_code_hash: hashInviteCode(normalizedInvite),
-      p_email: normalizedEmail,
-    },
-  )
-  const invite = Array.isArray(inviteRows) ? inviteRows[0] : inviteRows
-  if (inviteError || !invite?.org_id || invite.org_id !== organization.id) {
-    console.warn('start-signup invite rejected', inviteError?.message || 'no matching invite')
-    return json(response, 403, {
-      error: 'This invite code is invalid, expired, already used, or for another organization',
-    })
-  }
-  const invitedRole = ['admin', 'cleaner'].includes(invite.role) ? invite.role : 'cleaner'
-  const tempPassword = generateTemporaryPassword()
+  // NIC is used as the initial password — staff can change it after first login
+  const memberRole = 'cleaner'
 
   let authUserId = null
   try {
-    // email_confirm: true stops Supabase from sending its own verification
-    // link. Our 6-digit code is the only verification step. The temporary
-    // password is never derived from the NIC and is returned exactly once.
     const { data: authData, error: authError } =
       await supabase.auth.admin.createUser({
         email: normalizedEmail,
-        password: tempPassword,
+        password: normalizedNic,   // ← NIC as initial password
         email_confirm: true,
         user_metadata: { full_name: String(fullName).trim() },
       })
@@ -111,9 +90,9 @@ export default async function handler(request, response) {
 
     const { error: profileError } = await supabase.from('profiles').insert({
       id: authUserId,
-      role: invitedRole,
+      role: memberRole,
       org_id: organization.id,
-      email_verified: false,
+      email_verified: true,
       full_name: null,
       nic: null,
       must_change_password: null,
@@ -126,50 +105,29 @@ export default async function handler(request, response) {
       p_full_name: String(fullName).trim(),
       p_nic: normalizedNic,
       p_phone: String(phone || '').trim() || null,
-      p_role: invitedRole,
-      p_must_change_password: true,
+      p_role: memberRole,
+      p_must_change_password: false,
     })
     if (memberError) throw memberError
 
-    const { data: consumed, error: consumeError } = await supabase.rpc(
-      'consume_organization_invite',
-      { p_invite_id: invite.invite_id },
-    )
-    if (consumeError || consumed !== true) {
-      throw consumeError || new Error('Invite could not be consumed')
-    }
-
     await writeAuditLog({
-      action: 'signup_started',
+      action: 'signup_completed',
       orgId: organization.id,
       targetUserId: authUserId,
-      metadata: { invite_id: invite.invite_id, role: invitedRole },
+      metadata: { role: memberRole },
     })
 
-    const codeResult = await issueCode({
+    return json(response, 201, {
+      success: true,
       email: normalizedEmail,
-      fullName: String(fullName).trim(),
-      userId: authUserId,
     })
-    const common = {
-      email: normalizedEmail,
-      tempPassword,
-      delivered: codeResult.delivered,
-      cooldown: Boolean(codeResult.cooldown),
-    }
-    if (codeResult.cooldown) {
-      // The account was just created; keep the user able to continue from the
-      // verification screen even if a resend window is already open.
-      return json(response, 200, common)
-    }
-    return json(response, 201, common)
   } catch (error) {
     console.error('start-signup failed', error)
     if (authUserId) {
       await supabase.auth.admin.deleteUser(authUserId).catch(() => {})
     }
     return json(response, 500, {
-      error: 'Could not start signup. Please try again.',
+      error: 'Could not create the account. Please try again.',
     })
   }
 }

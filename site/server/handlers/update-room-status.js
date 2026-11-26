@@ -18,7 +18,7 @@ export default async function handler(request, response) {
   }
 
   const { userId, profile, organization } = caller
-  const { roomId, status, statusTime } = request.body || {}
+  const { roomId, status, statusTime, mediaId } = request.body || {}
 
   if (!roomId || !status) {
     return json(response, 400, { error: 'Room ID and status are required' })
@@ -43,73 +43,88 @@ export default async function handler(request, response) {
   const timestamp = statusTime ? new Date(statusTime).toISOString() : new Date().toISOString()
   const rawSchema = organization.schema_name
 
-  // Prefer direct Postgres pool (bypasses PostgREST tenant-schema permission gaps)
+  // Try service-role Supabase client (needs grant-service-role-tenant.sql to be run once)
   let updated = false
-  if (process.env.SUPABASE_DB_URL) {
-    const schema = pgIdent(rawSchema)
-    const pool = poolForDb()
-    const client = await pool.connect()
-    try {
-      try {
-        await client.query(
-          `insert into ${schema}.room_status_history (room_id, status, status_time, created_by)
-           values ($1, $2::public.room_status, $3::timestamptz, $4)`,
-          [roomId, status, timestamp, userId],
-        )
-        updated = true
-      } catch (pgErr) {
-        if (/foreign key|created_by/i.test(pgErr.message)) {
-          await client.query(
+  const { client: serverClient, error: clientError } = getAdminClient()
+
+  if (!clientError && serverClient) {
+    const tryRow = async (row) => {
+      const { error } = await serverClient
+        .schema(rawSchema)
+        .from('room_status_history')
+        .upsert(row, { ignoreDuplicates: true })
+      return error
+    }
+
+    let insertError = await tryRow({
+      room_id: roomId, status, status_time: timestamp, created_by: userId,
+      ...(mediaId ? { media_id: mediaId } : {}),
+    })
+
+    // media_id column missing — retry without it
+    if (insertError && /media_id/i.test(insertError.message)) {
+      insertError = await tryRow({ room_id: roomId, status, status_time: timestamp, created_by: userId })
+    }
+
+    // created_by FK failed — retry with null
+    if (insertError && /foreign key|created_by/i.test(insertError.message)) {
+      insertError = await tryRow({ room_id: roomId, status, status_time: timestamp, created_by: null })
+    }
+
+    // Already exists — treat as success
+    if (insertError && (insertError.code === '23505' || /conflict|duplicate/i.test(insertError.message))) {
+      insertError = null
+    }
+
+    if (!insertError) {
+      updated = true
+    } else {
+      console.warn('Service-role insert failed:', insertError.message)
+    }
+  }
+
+  // Fallback: direct Postgres pool
+  if (!updated && process.env.SUPABASE_DB_URL) {
+    let pool
+    try { pool = poolForDb() } catch { /* missing URL */ }
+    if (pool) {
+      let pgClient
+      try { pgClient = await pool.connect() } catch (e) {
+        console.warn('PG pool connect failed:', e.message)
+      }
+      if (pgClient) {
+        const schema = pgIdent(rawSchema)
+        try {
+          await pgClient.query(
             `insert into ${schema}.room_status_history (room_id, status, status_time, created_by)
-             values ($1, $2::public.room_status, $3::timestamptz, null)`,
-            [roomId, status, timestamp],
+             values ($1, $2::public.room_status, $3::timestamptz, $4)
+             on conflict do nothing`,
+            [roomId, status, timestamp, userId],
           )
           updated = true
-        } else {
-          throw pgErr
+        } catch (pgErr) {
+          if (/foreign key|created_by/i.test(pgErr.message)) {
+            try {
+              await pgClient.query(
+                `insert into ${schema}.room_status_history (room_id, status, status_time, created_by)
+                 values ($1, $2::public.room_status, $3::timestamptz, null)
+                 on conflict do nothing`,
+                [roomId, status, timestamp],
+              )
+              updated = true
+            } catch { /* ignore */ }
+          }
+        } finally {
+          pgClient.release()
         }
       }
-    } catch (pgError) {
-      console.error('PG pool update-room-status failed:', pgError.message)
-      return json(response, 400, { error: pgError.message })
-    } finally {
-      client.release()
     }
   }
 
   if (!updated) {
-    const { client: serverClient, error: clientError } = getAdminClient()
-    if (clientError || !serverClient) {
-      return json(response, 500, { error: 'Database client unavailable' })
-    }
-
-    let { error: insertError } = await serverClient
-      .schema(rawSchema)
-      .from('room_status_history')
-      .insert({
-        room_id: roomId,
-        status,
-        status_time: timestamp,
-        created_by: userId,
-      })
-
-    if (insertError && /foreign key|created_by/i.test(insertError.message)) {
-      const retry = await serverClient
-        .schema(rawSchema)
-        .from('room_status_history')
-        .insert({
-          room_id: roomId,
-          status,
-          status_time: timestamp,
-          created_by: null,
-        })
-      insertError = retry.error
-    }
-
-    if (insertError) {
-      console.error('Failed to update room status:', insertError)
-      return json(response, 400, { error: insertError.message })
-    }
+    return json(response, 500, {
+      error: 'Could not save room status. Run site/supabase/grant-service-role-tenant.sql in Supabase SQL Editor.',
+    })
   }
 
   try {

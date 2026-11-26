@@ -14,6 +14,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
+  const [successMessage] = useState(location.state?.message || '')
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
@@ -170,6 +171,9 @@ export default function LoginPage() {
           </p>
           {location.state?.notice && (
             <p className="organization-found" role="status">{location.state.notice}</p>
+          )}
+          {successMessage && (
+            <p className="notice success" role="status">{successMessage}</p>
           )}
           {error && <p id="login-error" className="form-error" role="alert">{error}</p>}
           <button className="primary-button" type="submit" disabled={submitting}>

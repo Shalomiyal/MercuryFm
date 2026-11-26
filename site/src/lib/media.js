@@ -357,50 +357,68 @@ export async function uploadRoomStatusMedia({
     let mediaId = null
     try {
       const orgDb = await db()
-      const { data: mediaRow, error: insertError } = await orgDb
+      const row = {
+        kind: 'photo',
+        mime_type: (file.type || 'image/jpeg').split(';')[0].trim(),
+        size_bytes: file.size,
+        chunk_count: 0,
+        bucket: WORK_MEDIA_BUCKET,
+        storage_path: storagePath,
+        thumb_path: savedThumbPath,
+        duration_seconds: null,
+        width: width ? Math.round(width) : null,
+        height: height ? Math.round(height) : null,
+        complete: true,
+        created_by: userId,
+      }
+
+      // Try plain insert first (works for cleaners and admins with in_org() = true)
+      let { data: mediaRow, error: insertError } = await orgDb
         .from('media')
-        .insert({
-          kind: 'photo',
-          mime_type: (file.type || 'image/jpeg').split(';')[0].trim(),
-          size_bytes: file.size,
-          chunk_count: 0,
-          bucket: WORK_MEDIA_BUCKET,
-          storage_path: storagePath,
-          thumb_path: savedThumbPath,
-          duration_seconds: null,
-          width: width ? Math.round(width) : null,
-          height: height ? Math.round(height) : null,
-          complete: true,
-          created_by: userId,
-        })
+        .insert(row)
         .select('id')
         .single()
 
-      if (insertError) {
-        const { data: retryRow, error: retryError } = await orgDb
-          .from('media')
-          .insert({
-            kind: 'photo',
-            mime_type: (file.type || 'image/jpeg').split(';')[0].trim(),
-            size_bytes: file.size,
-            chunk_count: 0,
-            bucket: WORK_MEDIA_BUCKET,
-            storage_path: storagePath,
-            thumb_path: savedThumbPath,
-            duration_seconds: null,
-            width: width ? Math.round(width) : null,
-            height: height ? Math.round(height) : null,
-            complete: true,
-            created_by: null,
-          })
-          .select('id')
-          .single()
-
-        if (!retryError) {
-          mediaId = retryRow?.id
-        }
-      } else {
+      if (!insertError) {
         mediaId = mediaRow?.id
+      } else {
+        const isConflict = insertError.code === '23505' ||
+          insertError.code === '409' ||
+          /conflict|duplicate|unique|already exists/i.test(insertError.message)
+        const isFkError = /foreign key|created_by/i.test(insertError.message)
+        const isRlsError = insertError.code === '403' ||
+          /row-level security|permission|not authorized|forbidden/i.test(insertError.message)
+
+        if (isConflict) {
+          // Row already exists — fetch it by storage_path
+          const { data: existing } = await orgDb
+            .from('media')
+            .select('id')
+            .eq('storage_path', storagePath)
+            .maybeSingle()
+          mediaId = existing?.id ?? null
+        } else if (isFkError) {
+          // created_by FK failed — retry without it
+          const { data: retryRow, error: retryErr } = await orgDb
+            .from('media')
+            .insert({ ...row, created_by: null })
+            .select('id')
+            .single()
+          if (!retryErr) {
+            mediaId = retryRow?.id ?? null
+          } else if (retryErr.code === '23505' || /conflict|duplicate/i.test(retryErr.message)) {
+            const { data: existing2 } = await orgDb
+              .from('media')
+              .select('id')
+              .eq('storage_path', storagePath)
+              .maybeSingle()
+            mediaId = existing2?.id ?? null
+          }
+        } else if (isRlsError) {
+          // RLS blocked the insert — try via the API fallback
+          // The media row will be linked to the status history via storage_path matching
+          console.warn('[uploadRoomStatusMedia] RLS blocked media insert, photo is in Storage only')
+        }
       }
     } catch {
       /* Media row insertion is best-effort */

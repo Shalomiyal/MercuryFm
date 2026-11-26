@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { generateTemporaryPassword } from '../api/lib/passwords'
+import { generateTemporaryPassword } from '../server/lib/passwords'
 
 describe('generateTemporaryPassword', () => {
   it('returns a high-entropy password with policy characters', () => {

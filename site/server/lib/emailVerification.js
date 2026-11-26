@@ -2,6 +2,12 @@ import { createHash, randomInt, timingSafeEqual } from 'node:crypto'
 import nodemailer from 'nodemailer'
 import { adminClient } from './serverSupabase.js'
 import { clientIp, consumeRateLimit } from './rateLimit.js'
+import { CircuitBreaker, withRetry, withTimeout } from './resilience.js'
+
+const smtpBreaker = new CircuitBreaker('smtp', {
+  failureThreshold: 5,
+  resetTimeoutMs: 30000,
+})
 
 export { clientIp } from './rateLimit.js'
 
@@ -127,9 +133,9 @@ async function sendCodeEmail({ email, code, fullName }) {
   }
   const greeting = fullName ? `Hi ${escapeHtml(fullName)},` : 'Hi,'
   const transporter = config
-    ? nodemailer.createTransport(config)
+    ? nodemailer.createTransport({ ...config, connectionTimeout: 5000, socketTimeout: 10000 })
     : nodemailer.createTransport({ jsonTransport: true })
-  const info = await transporter.sendMail({
+  const mailOptions = {
     from: process.env.SMTP_FROM || `"Mercury FM" <${config?.auth.user || 'no-reply@localhost'}>`,
     to: email,
     subject: 'Your Mercury FM verification code',
@@ -152,7 +158,15 @@ async function sendCodeEmail({ email, code, fullName }) {
     <p>If you did not request this code, you can ignore this email.</p>
   </body>
 </html>`,
-  })
+  }
+  const info = config
+    ? await smtpBreaker.exec(() =>
+        withRetry(() => withTimeout(() => transporter.sendMail(mailOptions), 8000, 'smtp'), {
+          retries: 1,
+          baseDelayMs: 250,
+        }),
+      )
+    : await transporter.sendMail(mailOptions)
   if (!config) {
     console.warn('[DEV ONLY - SMTP not configured] verification email was not sent:\n', info.message)
     return false

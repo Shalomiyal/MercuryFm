@@ -1,7 +1,8 @@
-import { getAdminClient, verifyUser } from './lib/serverSupabase.js'
-import { generateInviteCode, hashInviteCode } from './lib/invites.js'
-import { rateLimit, clientIp } from './lib/emailVerification.js'
-import { writeAuditLog } from './lib/audit.js'
+import { getAdminClient, verifyUser } from '../lib/serverSupabase.js'
+import { generateInviteCode, hashInviteCode } from '../lib/invites.js'
+import { rateLimit, clientIp } from '../lib/emailVerification.js'
+import { writeAuditLog } from '../lib/audit.js'
+import { sendRateLimited } from '../lib/rateLimit.js'
 
 function json(response, status, body) {
   response.setHeader('Content-Type', 'application/json')
@@ -27,9 +28,8 @@ export default async function handler(request, response) {
 
   const limit = await rateLimit(`invite-ip:${clientIp(request)}`, 30, 60 * 60 * 1000)
   if (limit.limited) {
-    return json(response, 429, {
+    return sendRateLimited(response, limit.retryAfter, {
       error: 'Too many invite codes were created. Please try again later.',
-      retryAfter: limit.retryAfter,
     })
   }
 

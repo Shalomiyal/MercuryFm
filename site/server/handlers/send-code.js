@@ -5,8 +5,9 @@ import {
   normalizeEmail,
   rateLimit,
   RESEND_COOLDOWN_MS,
-} from './lib/emailVerification.js'
-import { verifyTurnstile } from './lib/turnstile.js'
+} from '../lib/emailVerification.js'
+import { verifyTurnstile } from '../lib/turnstile.js'
+import { sendRateLimited } from '../lib/rateLimit.js'
 
 function json(response, status, body) {
   response.setHeader('Content-Type', 'application/json')
@@ -33,10 +34,9 @@ export default async function handler(request, response) {
   ])
   if (ipLimit.limited || emailLimit.limited) {
     const retryAfter = Math.max(ipLimit.retryAfter, emailLimit.retryAfter)
-    return json(response, 429, {
+    return sendRateLimited(response, retryAfter, {
       code: 'rate_limited',
       error: 'Too many code requests. Please try again later.',
-      retryAfter,
     })
   }
 
@@ -47,10 +47,9 @@ export default async function handler(request, response) {
       userId,
     })
     if (result.cooldown) {
-      return json(response, 429, {
+      return sendRateLimited(response, result.retryAfter, {
         code: 'cooldown',
         error: `Please wait ${result.retryAfter} seconds before requesting another code.`,
-        retryAfter: result.retryAfter,
       })
     }
     return json(response, 200, {

@@ -1,4 +1,4 @@
-import { getAdminClient, verifyUser } from './lib/serverSupabase.js'
+import { getAdminClient, verifyUser } from '../lib/serverSupabase.js'
 
 function json(response, status, body) {
   response.setHeader('Content-Type', 'application/json')

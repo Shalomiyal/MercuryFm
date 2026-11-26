@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { jsonError } from '../api/lib/httpError'
+import { jsonError } from '../server/lib/httpError'
 
 function fakeResponse() {
   const response = {

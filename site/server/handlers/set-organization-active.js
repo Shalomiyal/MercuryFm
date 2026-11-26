@@ -1,5 +1,6 @@
-import { getAdminClient, verifyUser } from './lib/serverSupabase.js'
-import { writeAuditLog } from './lib/audit.js'
+import { getAdminClient, verifyUser } from '../lib/serverSupabase.js'
+import { writeAuditLog } from '../lib/audit.js'
+import { cacheDelete } from '../lib/cache.js'
 
 function json(response, status, body) {
   response.setHeader('Content-Type', 'application/json')
@@ -31,7 +32,7 @@ export default async function handler(request, response) {
   }
   const { data: organization, error: organizationError } = await serverClient
     .from('organizations')
-    .select('id, is_active')
+    .select('id, slug, is_active')
     .eq('id', organizationId)
     .maybeSingle()
   if (organizationError) {
@@ -58,6 +59,7 @@ export default async function handler(request, response) {
     console.error('set-organization-active refresh failed', refreshError)
     return json(response, 400, { error: 'Could not refresh organization access' })
   }
+  await cacheDelete(`org:${organization.slug}`)
   await writeAuditLog({
     actorId: userId,
     action: isActive ? 'organization_activated' : 'organization_deactivated',

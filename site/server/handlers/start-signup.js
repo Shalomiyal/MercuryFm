@@ -1,15 +1,16 @@
-import { adminClient } from './lib/serverSupabase.js'
+import { adminClient } from '../lib/serverSupabase.js'
 import {
   issueCode,
   isValidEmail,
   normalizeEmail,
   rateLimit,
   clientIp,
-} from './lib/emailVerification.js'
-import { generateTemporaryPassword } from './lib/passwords.js'
-import { hashInviteCode, normalizeInviteCode } from './lib/invites.js'
-import { writeAuditLog } from './lib/audit.js'
-import { verifyTurnstile } from './lib/turnstile.js'
+} from '../lib/emailVerification.js'
+import { generateTemporaryPassword } from '../lib/passwords.js'
+import { hashInviteCode, normalizeInviteCode } from '../lib/invites.js'
+import { writeAuditLog } from '../lib/audit.js'
+import { verifyTurnstile } from '../lib/turnstile.js'
+import { sendRateLimited } from '../lib/rateLimit.js'
 
 function json(response, status, body) {
   response.setHeader('Content-Type', 'application/json')
@@ -49,10 +50,9 @@ export default async function handler(request, response) {
   }
   const ipLimit = await rateLimit(`signup-ip:${clientIp(request)}`, 10, 60 * 60 * 1000)
   if (ipLimit.limited) {
-    return json(response, 429, {
+    return sendRateLimited(response, ipLimit.retryAfter, {
       code: 'rate_limited',
       error: 'Too many signup attempts. Please try again later.',
-      retryAfter: ipLimit.retryAfter,
     })
   }
 

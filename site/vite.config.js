@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const rootDir = path.dirname(fileURLToPath(import.meta.url))
-const apiRoot = path.join(rootDir, 'api')
+const apiRoot = path.join(rootDir, 'server', 'handlers')
 const MAX_LOCAL_BODY_BYTES = 8 * 1024 * 1024
 
 function localApiError(outgoing, status, error) {

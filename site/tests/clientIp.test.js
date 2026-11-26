@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { clientIp } from '../api/lib/rateLimit'
+import { clientIp } from '../server/lib/rateLimit'
 
 function request(headers) {
   return { headers }

@@ -4,7 +4,8 @@ import {
   normalizeEmail,
   rateLimit,
   verifyCode,
-} from './lib/emailVerification.js'
+} from '../lib/emailVerification.js'
+import { sendRateLimited } from '../lib/rateLimit.js'
 
 function json(response, status, body) {
   response.setHeader('Content-Type', 'application/json')
@@ -26,10 +27,9 @@ export default async function handler(request, response) {
   }
   const ipLimit = await rateLimit(`verify-ip:${clientIp(request)}`, 30, 15 * 60 * 1000)
   if (ipLimit.limited) {
-    return json(response, 429, {
+    return sendRateLimited(response, ipLimit.retryAfter, {
       code: 'rate_limited',
       error: 'Too many verification attempts. Please try again later.',
-      retryAfter: ipLimit.retryAfter,
     })
   }
 

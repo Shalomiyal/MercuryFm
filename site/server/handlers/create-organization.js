@@ -1,8 +1,8 @@
-import { getAdminClient, verifyUser } from './lib/serverSupabase.js'
-import { createDbPool } from './lib/dbPool.js'
-import { generateTemporaryPassword } from './lib/passwords.js'
-import { issueCode, isValidEmail, normalizeEmail } from './lib/emailVerification.js'
-import { writeAuditLog } from './lib/audit.js'
+import { getAdminClient, verifyUser } from '../lib/serverSupabase.js'
+import { createDbPool } from '../lib/dbPool.js'
+import { generateTemporaryPassword } from '../lib/passwords.js'
+import { issueCode, isValidEmail, normalizeEmail } from '../lib/emailVerification.js'
+import { writeAuditLog } from '../lib/audit.js'
 
 function json(response, status, body) {
   response.setHeader('Content-Type', 'application/json')

@@ -1,4 +1,5 @@
-import { getAdminClient, verifyUser } from './lib/serverSupabase.js'
+import { getAdminClient, verifyUser } from '../lib/serverSupabase.js'
+import { cacheGet, cacheSet } from '../lib/cache.js'
 
 function json(response, status, body) {
   response.setHeader('Content-Type', 'application/json')
@@ -24,14 +25,22 @@ export default async function handler(request, response) {
     return json(response, 500, { error: 'Server authentication is not configured' })
   }
 
-  const { data: organization, error: organizationError } = await serverClient
-    .from('organizations')
-    .select('id, name, slug, is_active')
-    .eq('slug', slug)
-    .maybeSingle()
-  if (organizationError) {
-    console.error('login-options organization lookup failed', organizationError)
-    return json(response, 400, { error: 'Could not check the organization code' })
+  const cacheKey = `org:${slug}`
+  let organization = await cacheGet(cacheKey)
+  if (!organization) {
+    const { data, error: organizationError } = await serverClient
+      .from('organizations')
+      .select('id, name, slug, is_active')
+      .eq('slug', slug)
+      .maybeSingle()
+    if (organizationError) {
+      console.error('login-options organization lookup failed', organizationError)
+      return json(response, 400, { error: 'Could not check the organization code' })
+    }
+    organization = data
+    if (organization?.is_active) {
+      await cacheSet(cacheKey, organization, 60)
+    }
   }
   if (!organization || !organization.is_active) {
     return json(response, 404, { error: 'Organization code not found or inactive' })
@@ -44,6 +53,7 @@ export default async function handler(request, response) {
   }
   const { userId, error: authError } = await verifyUser(request)
   if (authError || !userId) {
+    response.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
     return json(response, 200, { organization: publicOrganization, users: [] })
   }
 
@@ -71,5 +81,6 @@ export default async function handler(request, response) {
     fullName: user.full_name,
     role: user.role,
   }))
+  response.setHeader('Cache-Control', 'private, no-store')
   return json(response, 200, { organization: publicOrganization, users })
 }
